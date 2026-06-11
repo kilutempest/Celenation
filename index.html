@@ -1320,6 +1320,7 @@ let state = {
   draft:{},
   matchups:{},
   statSnapshots:{},   // weekNum -> { playerId: {pts,reb,ast,stl,blk,foul,to,gp} }
+  weeklyStats:{},     // `w<week>_<playerId>` -> {pts,reb,ast,stl,blk,foul,to}
   transactions:[],
   champDraft:null,
   champRosters:{},
@@ -1819,7 +1820,7 @@ function renderHome(){
             <div class="roster-grid">
               ${roster.slice(0,4).map(pid=>{
                 const p=PLAYER_MAP[pid]; if(!p) return '';
-                const stats=state.weeklyStats[`w${week}_${pid}`];
+                const stats=state.weeklyStats?.[`w${week}_${pid}`];
                 const fp=fantasyPts(stats);
                 return `<div class="roster-card">
                   <div class="roster-card-name">${p.name.split(' ').pop()}</div>
@@ -1875,7 +1876,7 @@ function renderMyTeam(){
       📋 Draft hasn't happened yet. Check back after the draft.
     </div>`;
 
-  const totalFP = roster.reduce((s,pid)=>s+fantasyPts(state.weeklyStats[`w${week}_${pid}`]),0);
+  const totalFP = roster.reduce((s,pid)=>s+fantasyPts(state.weeklyStats?.[`w${week}_${pid}`]),0);
 
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -3391,6 +3392,23 @@ function buildDemoState(){
     {groupId: 1, username: 'DemoYou',     added: ALL_PLAYERS[61]?.id, dropped: top56[35]?.id, ts: Date.now() - 86400000*1},
   ].filter(t => t.added && t.dropped) : [];
 
+  // Fake stats for the current week so My Team + Home show real fantasy points.
+  const weeklyStats = {};
+  const week = 4;
+  const allDraftedIds = new Set();
+  Object.values(rosters).forEach(arr => arr.forEach(id => allDraftedIds.add(id)));
+  allDraftedIds.forEach(pid => {
+    weeklyStats[`w${week}_${pid}`] = {
+      pts:  Math.floor(Math.random() * 22) + 5,
+      reb:  Math.floor(Math.random() * 8) + 1,
+      ast:  Math.floor(Math.random() * 6),
+      stl:  Math.floor(Math.random() * 3),
+      blk:  Math.floor(Math.random() * 2),
+      foul: Math.floor(Math.random() * 4),
+      to:   Math.floor(Math.random() * 3),
+    };
+  });
+
   return {
     users,
     groups: {1: {id: 1, name: 'CNL Demo League', managers: players, week: 4, draftDone: true, schedule}},
@@ -3398,6 +3416,7 @@ function buildDemoState(){
     draft: {1: {started: true, done: true, order, pickIdx: 56, picks}},
     matchups,
     statSnapshots: {},
+    weeklyStats,
     transactions: txCandidates,
     champDraft: null,
     champRosters: {},
