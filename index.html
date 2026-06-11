@@ -3448,29 +3448,70 @@ function setDemoStage(stage){
   render();
 }
 
+let _demoBannerExpanded = false;
+
+function toggleDemoBanner(){
+  _demoBannerExpanded = !_demoBannerExpanded;
+  injectDemoBanner();
+}
+
 function injectDemoBanner(){
   const existing = document.getElementById('demoBanner');
   if(existing) existing.remove();
 
-  const isMid      = _demoStage === 'midseason';
-  const isComplete = _demoStage === 'complete';
-  const activeStyle   = 'background:#fff;color:#c81d1d';
-  const inactiveStyle = 'background:rgba(255,255,255,.15);color:#fff';
-
   const b = document.createElement('div');
   b.id = 'demoBanner';
-  b.style.cssText = 'position:fixed;bottom:18px;right:18px;background:linear-gradient(135deg,#ff6600,#ff2222);color:#fff;padding:10px 14px;border-radius:14px;font-size:.78rem;font-weight:800;letter-spacing:.02em;box-shadow:0 6px 24px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.1);z-index:9999;display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:calc(100vw - 36px)';
-  b.innerHTML = `
-    <span style="display:flex;align-items:center;gap:6px">
-      <span style="font-size:1rem">🎯</span>
-      <span>DEMO</span>
-    </span>
-    <div style="display:flex;background:rgba(0,0,0,.25);padding:3px;border-radius:9px">
-      <button onclick="setDemoStage('midseason')" style="${isMid?activeStyle:inactiveStyle};border:none;padding:5px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Mid-Season</button>
-      <button onclick="setDemoStage('complete')" style="${isComplete?activeStyle:inactiveStyle};border:none;padding:5px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Group Complete</button>
-    </div>
-    <a href="/" style="color:#fff;text-decoration:none;font-size:.72rem;font-weight:700;border-left:1px solid rgba(255,255,255,.3);padding-left:10px">Try real app →</a>
-  `;
+  // Sits above the 62px mobile bottom nav + iOS safe area; clear of edges
+  // on desktop where there's no bottom nav.
+  b.style.cssText = 'position:fixed;right:14px;bottom:calc(72px + env(safe-area-inset-bottom, 0px));z-index:9999;font-family:inherit;pointer-events:auto';
+
+  if(!_demoBannerExpanded){
+    // Collapsed: compact pill, tap to expand.
+    b.innerHTML = `
+      <button onclick="toggleDemoBanner()" style="
+        background:linear-gradient(135deg,#ff6600,#ff2222);
+        color:#fff;border:none;padding:9px 14px;border-radius:50px;
+        font-size:.78rem;font-weight:800;letter-spacing:.02em;cursor:pointer;
+        box-shadow:0 6px 20px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.1);
+        display:flex;align-items:center;gap:6px;font-family:inherit">
+        <span style="font-size:1rem">🎯</span>
+        <span>DEMO</span>
+        <span style="opacity:.7;font-size:.65rem;margin-left:2px">▲</span>
+      </button>`;
+  } else {
+    // Expanded: full controls panel.
+    const isMid      = _demoStage === 'midseason';
+    const isComplete = _demoStage === 'complete';
+    const activeStyle   = 'background:#fff;color:#c81d1d';
+    const inactiveStyle = 'background:rgba(255,255,255,.15);color:#fff';
+
+    b.innerHTML = `
+      <div style="
+        background:linear-gradient(135deg,#ff6600,#ff2222);
+        color:#fff;padding:12px 14px;border-radius:14px;
+        font-size:.78rem;font-weight:800;letter-spacing:.02em;
+        box-shadow:0 8px 28px rgba(0,0,0,.55),0 0 0 2px rgba(255,255,255,.1);
+        display:flex;flex-direction:column;gap:10px;
+        min-width:240px;max-width:calc(100vw - 28px)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:1rem">🎯</span>
+            <span>DEMO MODE</span>
+          </span>
+          <button onclick="toggleDemoBanner()" aria-label="Collapse" style="
+            background:rgba(0,0,0,.25);color:#fff;border:none;
+            width:24px;height:24px;border-radius:50%;cursor:pointer;
+            font-size:.85rem;font-weight:800;display:flex;align-items:center;
+            justify-content:center;line-height:1;font-family:inherit">✕</button>
+        </div>
+        <div style="display:flex;background:rgba(0,0,0,.25);padding:3px;border-radius:9px;width:100%">
+          <button onclick="setDemoStage('midseason')" style="${isMid?activeStyle:inactiveStyle};flex:1;border:none;padding:7px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Mid-Season</button>
+          <button onclick="setDemoStage('complete')" style="${isComplete?activeStyle:inactiveStyle};flex:1;border:none;padding:7px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Group Complete</button>
+        </div>
+        <a href="/" style="color:#fff;text-decoration:none;font-size:.74rem;font-weight:700;text-align:center;padding-top:6px;border-top:1px solid rgba(255,255,255,.25)">Try the real app →</a>
+      </div>`;
+  }
+
   document.body.appendChild(b);
 }
 
