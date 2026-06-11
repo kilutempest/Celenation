@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Welcome — CeleNation Fantasy</title>
+<style>
+  body{margin:0;background:#070b16;color:#e6ecf5;font-family:system-ui,-apple-system,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .card{max-width:480px;width:100%;background:#0f1730;border:1px solid #1a3350;border-radius:16px;padding:32px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.4)}
+  h1{font-weight:900;margin:0 0 8px;font-size:1.5rem;letter-spacing:-.02em}
+  p{color:#8aa3c4;line-height:1.55;margin:8px 0;font-size:.95rem}
+  .spin{width:48px;height:48px;border:4px solid #1a3350;border-top-color:#4d9eff;border-radius:50%;margin:24px auto;animation:s 1s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .err{color:#ff6868}
+  .ok{color:#00e87a}
+  a.btn,button.btn{display:inline-block;margin-top:18px;background:#4d9eff;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:800;border:none;cursor:pointer;font-size:1rem}
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <h1>Finishing your account…</h1>
+  <p>Verifying your payment and creating your account.</p>
+  <div class="spin"></div>
+</div>
+<script>
+(async () => {
+  const card = document.getElementById('card');
+  const params = new URLSearchParams(location.search);
+  const sessionId = params.get('session_id');
+
+  if (!sessionId) {
+    card.innerHTML =
+      '<h1 class="err">Missing checkout info</h1>' +
+      '<p>No session ID in the URL.</p>' +
+      '<a class="btn" href="/">Back to app</a>';
+    return;
+  }
+
+  // Stripe may need a moment to finalize the session after redirect — retry briefly.
+  let lastErr = 'Could not finalize your account.';
+  for (let i = 0; i < 6; i++) {
+    try {
+      const res = await fetch('/.netlify/functions/finalize-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok && data.account) {
+        localStorage.setItem('cnf_user', JSON.stringify({ username: data.account.username }));
+        card.innerHTML =
+          '<h1 class="ok">You’re in, ' + escapeHtml(data.account.username) + '!</h1>' +
+          '<p>Account created and payment confirmed. Heading to the app…</p>' +
+          '<div class="spin"></div>';
+        setTimeout(() => { location.href = '/'; }, 1400);
+        return;
+      }
+      lastErr = data.error || lastErr;
+      // 402 = not paid yet; keep waiting. Other errors: bail early.
+      if (res.status && res.status !== 402 && res.status !== 502) break;
+    } catch (e) {
+      lastErr = 'Network error.';
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+
+  card.innerHTML =
+    '<h1 class="err">Something went wrong</h1>' +
+    '<p>' + escapeHtml(lastErr) + '</p>' +
+    '<p>Your payment is safe — if you were charged, contact the commissioner and they can finish setting up your account.</p>' +
+    '<a class="btn" href="/">Back to app</a>';
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[c]);
+  }
+})();
+</script>
+</body>
+</html>

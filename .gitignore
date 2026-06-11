@@ -1,0 +1,26 @@
+# Build artifacts
+*.zip
+deploy-*.zip
+celenation-*.zip
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude Code workspace state
+.claude/
+
+# Local secrets — if you ever create .env, NEVER commit it
+.env
+.env.local
+.env.*.local
+
+# Node deps (functions use only built-ins, but just in case)
+node_modules/

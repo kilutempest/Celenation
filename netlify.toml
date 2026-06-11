@@ -1,0 +1,11 @@
+[build]
+  publish = "."
+
+[build.environment]
+  # SUPABASE_URL is a public project URL (like a domain), intentionally
+  # embedded in the browser HTML for the cnf_state sync. It is not a secret.
+  SECRETS_SCAN_OMIT_KEYS = "SUPABASE_URL"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
