@@ -3345,7 +3345,17 @@ function refreshMobileNav(){
 // league, no auth, no Supabase, no Stripe. Changes don't persist anywhere.
 const IS_DEMO = location.pathname.replace(/\/+$/, '').toLowerCase().startsWith('/demo');
 
-function buildDemoState(){
+// Demo stage state — 'midseason' (week 4 in progress) or 'complete' (group
+// stage fully finished). Visitors toggle between them via the banner.
+let _demoStage = 'midseason';
+
+function buildDemoState(stage){
+  stage = stage || 'midseason';
+  const isComplete = stage === 'complete';
+  const groupWeek    = isComplete ? 7 : 4;  // displayed "current" week
+  const lastDoneWeek = isComplete ? 7 : 3;  // weeks <= this are fully scored
+  const liveWeek     = isComplete ? null : 4; // week currently in progress
+
   const players = ['DemoYou','HoopsLegend','DunkMaster','FlashG','BigManMike','SwishKing','DefenseDave','RookieRandy'];
 
   // Snake-draft the most valuable 56 players across the 8 managers.
@@ -3366,16 +3376,16 @@ function buildDemoState(){
     rosters[manager].push(player.id);
   });
 
-  // Round-robin schedule. Currently mid-season (week 4 of 7).
+  // Round-robin schedule with stage-aware scores.
   const schedule = roundRobin(players);
   const matchups = {};
   schedule.forEach((round, ri) => {
     const week = ri + 1;
-    matchups[`g${1}_w${week}`] = round.map(([m1, m2]) => {
-      if(week < 4){
+    matchups[`g1_w${week}`] = round.map(([m1, m2]) => {
+      if(week <= lastDoneWeek){
         return {m1, m2, s1: 65 + Math.floor(Math.random()*50), s2: 65 + Math.floor(Math.random()*50), done: true};
       }
-      if(week === 4){
+      if(week === liveWeek){
         return {m1, m2, s1: 25 + Math.floor(Math.random()*40), s2: 25 + Math.floor(Math.random()*40), done: false};
       }
       return {m1, m2, s1: 0, s2: 0, done: false};
@@ -3392,26 +3402,28 @@ function buildDemoState(){
     {groupId: 1, username: 'DemoYou',     added: ALL_PLAYERS[61]?.id, dropped: top56[35]?.id, ts: Date.now() - 86400000*1},
   ].filter(t => t.added && t.dropped) : [];
 
-  // Fake stats for the current week so My Team + Home show real fantasy points.
+  // Fake stats for every week up through groupWeek so My Team / Home / Matchups
+  // all show realistic fantasy point totals.
   const weeklyStats = {};
-  const week = 4;
   const allDraftedIds = new Set();
   Object.values(rosters).forEach(arr => arr.forEach(id => allDraftedIds.add(id)));
-  allDraftedIds.forEach(pid => {
-    weeklyStats[`w${week}_${pid}`] = {
-      pts:  Math.floor(Math.random() * 22) + 5,
-      reb:  Math.floor(Math.random() * 8) + 1,
-      ast:  Math.floor(Math.random() * 6),
-      stl:  Math.floor(Math.random() * 3),
-      blk:  Math.floor(Math.random() * 2),
-      foul: Math.floor(Math.random() * 4),
-      to:   Math.floor(Math.random() * 3),
-    };
-  });
+  for(let w = 1; w <= groupWeek; w++){
+    allDraftedIds.forEach(pid => {
+      weeklyStats[`w${w}_${pid}`] = {
+        pts:  Math.floor(Math.random() * 22) + 5,
+        reb:  Math.floor(Math.random() * 8)  + 1,
+        ast:  Math.floor(Math.random() * 6),
+        stl:  Math.floor(Math.random() * 3),
+        blk:  Math.floor(Math.random() * 2),
+        foul: Math.floor(Math.random() * 4),
+        to:   Math.floor(Math.random() * 3),
+      };
+    });
+  }
 
   return {
     users,
-    groups: {1: {id: 1, name: 'CNL Demo League', managers: players, week: 4, draftDone: true, schedule}},
+    groups: {1: {id: 1, name: 'CNL Demo League', managers: players, week: groupWeek, draftDone: true, schedule}},
     rosters,
     draft: {1: {started: true, done: true, order, pickIdx: 56, picks}},
     matchups,
@@ -3425,14 +3437,40 @@ function buildDemoState(){
   };
 }
 
+function setDemoStage(stage){
+  if(stage !== 'midseason' && stage !== 'complete') return;
+  _demoStage = stage;
+  // Wipe and rebuild state with the new stage.
+  for(const k of Object.keys(state)) delete state[k];
+  Object.assign(state, buildDemoState(stage));
+  view = 'home';
+  injectDemoBanner();  // rebuild banner so the active button highlights
+  render();
+}
+
 function injectDemoBanner(){
-  if(document.getElementById('demoBanner')) return;
+  const existing = document.getElementById('demoBanner');
+  if(existing) existing.remove();
+
+  const isMid      = _demoStage === 'midseason';
+  const isComplete = _demoStage === 'complete';
+  const activeStyle   = 'background:#fff;color:#c81d1d';
+  const inactiveStyle = 'background:rgba(255,255,255,.15);color:#fff';
+
   const b = document.createElement('div');
   b.id = 'demoBanner';
-  b.style.cssText = 'position:fixed;bottom:18px;right:18px;background:linear-gradient(135deg,#ff6600,#ff2222);color:#fff;padding:10px 16px;border-radius:50px;font-size:.82rem;font-weight:800;letter-spacing:.02em;box-shadow:0 6px 24px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.1);z-index:9999;cursor:pointer;text-decoration:none;transition:transform .15s';
-  b.innerHTML = '<a href="/" style="color:#fff;text-decoration:none">🎯 DEMO MODE · Try the real app →</a>';
-  b.addEventListener('mouseenter', ()=> b.style.transform='scale(1.05)');
-  b.addEventListener('mouseleave', ()=> b.style.transform='scale(1)');
+  b.style.cssText = 'position:fixed;bottom:18px;right:18px;background:linear-gradient(135deg,#ff6600,#ff2222);color:#fff;padding:10px 14px;border-radius:14px;font-size:.78rem;font-weight:800;letter-spacing:.02em;box-shadow:0 6px 24px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.1);z-index:9999;display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:calc(100vw - 36px)';
+  b.innerHTML = `
+    <span style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:1rem">🎯</span>
+      <span>DEMO</span>
+    </span>
+    <div style="display:flex;background:rgba(0,0,0,.25);padding:3px;border-radius:9px">
+      <button onclick="setDemoStage('midseason')" style="${isMid?activeStyle:inactiveStyle};border:none;padding:5px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Mid-Season</button>
+      <button onclick="setDemoStage('complete')" style="${isComplete?activeStyle:inactiveStyle};border:none;padding:5px 10px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;letter-spacing:.02em;white-space:nowrap;font-family:inherit">Group Complete</button>
+    </div>
+    <a href="/" style="color:#fff;text-decoration:none;font-size:.72rem;font-weight:700;border-left:1px solid rgba(255,255,255,.3);padding-left:10px">Try real app →</a>
+  `;
   document.body.appendChild(b);
 }
 
