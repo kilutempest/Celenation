@@ -3339,12 +3339,108 @@ function refreshMobileNav(){
   if(deskDraftBtn) deskDraftBtn.style.display=(draft?.started&&!draft?.done)?'block':'none';
 }
 
+// ─── DEMO MODE ───────────────────────────────────────────────────────────────
+// /demo/* serves a self-contained marketing demo. Pre-populated mid-season
+// league, no auth, no Supabase, no Stripe. Changes don't persist anywhere.
+const IS_DEMO = location.pathname.replace(/\/+$/, '').toLowerCase().startsWith('/demo');
+
+function buildDemoState(){
+  const players = ['DemoYou','HoopsLegend','DunkMaster','FlashG','BigManMike','SwishKing','DefenseDave','RookieRandy'];
+
+  // Snake-draft the most valuable 56 players across the 8 managers.
+  const top56 = [...ALL_PLAYERS]
+    .map(p => ({p, v: playerValue(p)}))
+    .sort((a,b) => b.v - a.v)
+    .slice(0, 56)
+    .map(x => x.p);
+  const order = snakeOrder(players, 7);
+  const picks = [];
+  const rosters = {};
+  players.forEach(u => rosters[u] = []);
+  top56.forEach((player, i) => {
+    const manager = order[i];
+    const round = Math.floor(i / players.length) + 1;
+    const pick = (i % players.length) + 1;
+    picks.push({manager, playerId: player.id, round, pick, overall: i+1});
+    rosters[manager].push(player.id);
+  });
+
+  // Round-robin schedule. Currently mid-season (week 4 of 7).
+  const schedule = roundRobin(players);
+  const matchups = {};
+  schedule.forEach((round, ri) => {
+    const week = ri + 1;
+    matchups[`g${1}_w${week}`] = round.map(([m1, m2]) => {
+      if(week < 4){
+        return {m1, m2, s1: 65 + Math.floor(Math.random()*50), s2: 65 + Math.floor(Math.random()*50), done: true};
+      }
+      if(week === 4){
+        return {m1, m2, s1: 25 + Math.floor(Math.random()*40), s2: 25 + Math.floor(Math.random()*40), done: false};
+      }
+      return {m1, m2, s1: 0, s2: 0, done: false};
+    });
+  });
+
+  const users = {};
+  players.forEach(u => {
+    users[u] = {isAdmin: u === 'DemoYou', groupId: 1, avatar: null};
+  });
+
+  const txCandidates = top56.length >= 60 ? [
+    {groupId: 1, username: 'HoopsLegend', added: ALL_PLAYERS[60]?.id, dropped: top56[40]?.id, ts: Date.now() - 86400000*3},
+    {groupId: 1, username: 'DemoYou',     added: ALL_PLAYERS[61]?.id, dropped: top56[35]?.id, ts: Date.now() - 86400000*1},
+  ].filter(t => t.added && t.dropped) : [];
+
+  return {
+    users,
+    groups: {1: {id: 1, name: 'CNL Demo League', managers: players, week: 4, draftDone: true, schedule}},
+    rosters,
+    draft: {1: {started: true, done: true, order, pickIdx: 56, picks}},
+    matchups,
+    statSnapshots: {},
+    transactions: txCandidates,
+    champDraft: null,
+    champRosters: {},
+    bracket: {rounds: [], generated: false},
+    nextGroupId: 2,
+  };
+}
+
+function injectDemoBanner(){
+  if(document.getElementById('demoBanner')) return;
+  const b = document.createElement('div');
+  b.id = 'demoBanner';
+  b.style.cssText = 'position:fixed;bottom:18px;right:18px;background:linear-gradient(135deg,#ff6600,#ff2222);color:#fff;padding:10px 16px;border-radius:50px;font-size:.82rem;font-weight:800;letter-spacing:.02em;box-shadow:0 6px 24px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.1);z-index:9999;cursor:pointer;text-decoration:none;transition:transform .15s';
+  b.innerHTML = '<a href="/" style="color:#fff;text-decoration:none">🎯 DEMO MODE · Try the real app →</a>';
+  b.addEventListener('mouseenter', ()=> b.style.transform='scale(1.05)');
+  b.addEventListener('mouseleave', ()=> b.style.transform='scale(1)');
+  document.body.appendChild(b);
+}
+
+function setupDemo(){
+  // Block all persistence + network so visitors can't mutate real data and
+  // a refresh resets to the pristine demo.
+  window.save = () => {};
+  window.cloudSaveState = () => {};
+  window.cloudFetchState = async () => null;
+  window.cloudFetchAccountPublic = async () => null;
+  window.cloudFetchAllAccountsPublic = async () => [];
+  window.cloudFetchPlayers = async () => [];
+  window.api = async () => ({ok: false, status: 200, data: {error: '🎯 Demo mode — this action is disabled.'}});
+  window.syncFromRecLeague = async () => ({source: 'demo'});
+
+  // Sign-out just resets the demo.
+  window.doSignOut = () => location.reload();
+
+  const demoState = buildDemoState();
+  Object.assign(state, demoState);
+  me = {username: 'DemoYou'};
+
+  injectDemoBanner();
+}
+
 // ─── INIT ──────────────────────────────────────────────────────────────────
 
-load();
-
-// Paint immediately from localStorage so the UI feels instant, then pull the
-// authoritative cloud state in the background and re-render once it lands.
 function applyAuthUI(){
   if(me){
     document.getElementById('loginModal').classList.remove('open');
@@ -3355,30 +3451,38 @@ function applyAuthUI(){
     document.getElementById('loginModal').classList.add('open');
   }
 }
-applyAuthUI();
-render();
 
-// Pull shared state from the cloud — this is the real source of truth.
-// If the logged-in user no longer exists, sign them out (deleted elsewhere).
-(async()=>{
-  const cloud = await cloudFetchState();
-  if(cloud) mergeCloudState(cloud);
-  if(me){
-    const acct = await cloudFetchAccountPublic(me.username);
-    if(!acct){ doSignOut(); return; }
-    const existing = state.users[me.username] || {};
-    state.users[me.username] = {
-      isAdmin: !!acct.is_admin,
-      groupId: existing.groupId ?? acct.group_id ?? null,
-      avatar: acct.avatar_data || existing.avatar || null,
-    };
-  }
+if(IS_DEMO){
+  setupDemo();
   applyAuthUI();
   render();
-})();
+} else {
+  load();
+  applyAuthUI();
+  render();
 
-// Then silently try to update stats in background (won't block UI)
-syncFromRecLeague().then(r=>{ if(r?.source==='live') render(); });
+  // Pull shared state from the cloud — this is the real source of truth.
+  // If the logged-in user no longer exists, sign them out (deleted elsewhere).
+  (async()=>{
+    const cloud = await cloudFetchState();
+    if(cloud) mergeCloudState(cloud);
+    if(me){
+      const acct = await cloudFetchAccountPublic(me.username);
+      if(!acct){ doSignOut(); return; }
+      const existing = state.users[me.username] || {};
+      state.users[me.username] = {
+        isAdmin: !!acct.is_admin,
+        groupId: existing.groupId ?? acct.group_id ?? null,
+        avatar: acct.avatar_data || existing.avatar || null,
+      };
+    }
+    applyAuthUI();
+    render();
+  })();
+
+  // Then silently try to update stats in background (won't block UI)
+  syncFromRecLeague().then(r=>{ if(r?.source==='live') render(); });
+}
 
 document.getElementById('siPassword').addEventListener('keydown',e=>{ if(e.key==='Enter') doSignIn(); });
 document.getElementById('suConfirm').addEventListener('keydown',e=>{ if(e.key==='Enter') doSignUp(); });

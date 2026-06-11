@@ -9,3 +9,14 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+
+# /demo serves the main app, which detects the path and switches to demo mode.
+[[redirects]]
+  from = "/demo"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/demo/*"
+  to = "/index.html"
+  status = 200
