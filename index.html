@@ -683,6 +683,32 @@ select.fi option{background:var(--surf2)}
   </div>
 </div>
 
+<!-- CHANGE PASSWORD MODAL -->
+<div class="overlay" id="changePwModal">
+  <div class="modal" style="max-width:400px;text-align:left">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <h2 style="font-size:1.2rem;font-weight:900;margin:0">🔑 Change Password</h2>
+      <button onclick="closeChangePassword()" style="background:rgba(255,255,255,.08);color:var(--text);border:none;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:.9rem;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1">✕</button>
+    </div>
+    <p style="color:var(--muted);font-size:.82rem;margin-bottom:16px">Update the password used to sign in to your account.</p>
+    <div class="fl">
+      <label class="form-label" style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:5px">Current Password</label>
+      <input class="fi" type="password" id="cpCurrent" placeholder="Your current password" autocomplete="current-password">
+    </div>
+    <div class="fl">
+      <label class="form-label" style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:5px">New Password</label>
+      <input class="fi" type="password" id="cpNew" placeholder="At least 4 characters" autocomplete="new-password">
+    </div>
+    <div class="fl">
+      <label class="form-label" style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:5px">Confirm New Password</label>
+      <input class="fi" type="password" id="cpConfirm" placeholder="Repeat new password" autocomplete="new-password">
+    </div>
+    <div id="cpErr" style="color:var(--red);font-size:.8rem;margin-bottom:10px;display:none"></div>
+    <div id="cpOk" style="color:var(--green);font-size:.85rem;margin-bottom:10px;display:none;font-weight:700"></div>
+    <button class="btn btn-blue" style="width:100%;padding:12px;font-size:.95rem" onclick="doChangePassword()">Update Password →</button>
+  </div>
+</div>
+
 <!-- NAV -->
 <nav style="position:relative">
   <div class="logo graffiti">
@@ -706,6 +732,7 @@ select.fi option{background:var(--surf2)}
   <div id="navUser" style="display:none;align-items:center;gap:8px">
       <div id="navAvatar" style="width:32px;height:32px;border-radius:50%;background:var(--surf2);border:2px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:800;color:var(--lblue);flex-shrink:0"></div>
       <span id="navUsername" style="font-size:.8rem;font-weight:700;color:var(--muted);display:none" class="desktop-only"></span>
+      <button onclick="openChangePassword()" style="font-size:.85rem;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:5px" title="Change password">🔑</button>
       <button onclick="doSignOut()" style="font-size:.72rem;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:5px" title="Sign out">✕</button>
     </div>
   </div>
@@ -744,6 +771,7 @@ select.fi option{background:var(--surf2)}
   <button onclick="nav('freeagency');closeMobileDrawer()"><span>🔄</span>Free Agency</button>
   <button onclick="nav('bracket');closeMobileDrawer()"><span>🏆</span>Bracket</button>
   <button id="md_admin" style="display:none" onclick="nav('admin');closeMobileDrawer()"><span>⚙️</span>Admin</button>
+  <button onclick="closeMobileDrawer();openChangePassword()"><span>🔑</span>Change Password</button>
   <button onclick="doSignOut();closeMobileDrawer()" style="color:var(--red)"><span>🚪</span>Sign Out</button>
 </div>
 
@@ -1658,6 +1686,45 @@ function doSignOut(){
   document.getElementById('loginModal').classList.add('open');
   document.getElementById('siUsername').value = '';
   document.getElementById('siPassword').value = '';
+}
+
+// ─── CHANGE PASSWORD ──────────────────────────────────────────────────────
+function openChangePassword(){
+  if(!me?.username){ return; }
+  ['cpCurrent','cpNew','cpConfirm'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  const err = document.getElementById('cpErr'); if(err){ err.style.display='none'; err.textContent=''; }
+  const ok  = document.getElementById('cpOk');  if(ok){  ok.style.display='none';  ok.textContent=''; }
+  document.getElementById('changePwModal').classList.add('open');
+}
+
+function closeChangePassword(){
+  document.getElementById('changePwModal').classList.remove('open');
+}
+
+async function doChangePassword(){
+  const current = document.getElementById('cpCurrent').value;
+  const next    = document.getElementById('cpNew').value;
+  const confirm = document.getElementById('cpConfirm').value;
+  const err = document.getElementById('cpErr');
+  const ok  = document.getElementById('cpOk');
+  function showErrLine(msg){ if(err){ err.textContent = msg; err.style.display = 'block'; } if(ok){ ok.style.display = 'none'; } }
+  function showOkLine(msg){ if(ok){ ok.textContent = msg; ok.style.display = 'block'; } if(err){ err.style.display = 'none'; } }
+
+  if(!current){ showErrLine('Enter your current password.'); return; }
+  if(next.length < 4){ showErrLine('New password must be at least 4 characters.'); return; }
+  if(next !== confirm){ showErrLine("New passwords don't match."); return; }
+  if(next === current){ showErrLine('New password is the same as the current one.'); return; }
+  if(!me?.username){ showErrLine('You need to be signed in.'); return; }
+
+  const r = await api('change-password', {
+    username: me.username,
+    currentPassword: current,
+    newPassword: next,
+  });
+  if(!r.ok){ showErrLine(r.data?.error || 'Could not update password.'); return; }
+
+  showOkLine('✅ Password updated.');
+  setTimeout(()=>{ closeChangePassword(); }, 1500);
 }
 
 // Legacy alias kept so old call sites don't break
