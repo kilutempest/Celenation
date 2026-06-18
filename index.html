@@ -1411,14 +1411,15 @@ function calcWeekScore(username, week, useChampRoster=false){
   const roster = (useChampRoster && state.champRosters?.[username]?.length)
     ? state.champRosters[username]
     : (state.rosters[username]||[]);
-  return parseFloat(roster.reduce((sum,pid)=>{
-    const snaps=state.statSnapshots||{};
-    if(snaps[week]||snaps[week-1]){
-      return sum+fantasyPts(getPlayerWeekStats(pid,week));
-    }
-    const stats=state.weeklyStats?.[`w${week}_${pid}`];
-    return sum+fantasyPts(stats);
-  },0).toFixed(1));
+  const snaps = state.statSnapshots||{};
+  const useSnap = snaps[week]||snaps[week-1];
+  const fpList = roster.map(pid => {
+    const s = useSnap ? getPlayerWeekStats(pid, week) : state.weeklyStats?.[`w${week}_${pid}`];
+    return fantasyPts(s);
+  });
+  // Only the top 5 performers count toward the weekly team total.
+  const top5 = fpList.sort((a,b) => b - a).slice(0, 5).reduce((s,x) => s + x, 0);
+  return parseFloat(top5.toFixed(1));
 }
 
 function isInChampBracket(username){
@@ -1943,31 +1944,47 @@ function renderMyTeam(){
       📋 Draft hasn't happened yet. Check back after the draft.
     </div>`;
 
-  const totalFP = roster.reduce((s,pid)=>s+fantasyPts(state.weeklyStats?.[`w${week}_${pid}`]),0);
+  // Compute fp per player, sort desc, take the top 5 — only they count.
+  const snaps = state.statSnapshots||{};
+  const useSnap = snaps[week]||snaps[week-1];
+  const rows = roster.map(pid => {
+    const p = PLAYER_MAP[pid];
+    if(!p) return null;
+    const s = useSnap ? getPlayerWeekStats(pid, week) : (state.weeklyStats?.[`w${week}_${pid}`] || {});
+    return { pid, p, s: s || {}, fp: fantasyPts(s) };
+  }).filter(Boolean).sort((a,b) => b.fp - a.fp);
+
+  const top5Set = new Set(rows.slice(0,5).map(r => r.pid));
+  const totalFP = rows.slice(0,5).reduce((sum, r) => sum + r.fp, 0);
+
+  const grid = '28px 1fr 48px 48px 48px 48px 48px 52px 48px 70px';
 
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <h1 class="page-title">${me.username}'s Team</h1>
       <div style="text-align:right">
         <div style="font-size:1.6rem;font-weight:900;color:var(--lblue)">${totalFP.toFixed(1)}</div>
-        <div style="font-size:.7rem;color:var(--muted)">Week ${week} pts</div>
+        <div style="font-size:.7rem;color:var(--muted)">Week ${week} · top 5</div>
       </div>
     </div>
-    <p class="page-sub">7-player roster · ${g.name}</p>
+    <p class="page-sub">7-player roster · best 5 performers count each week</p>
     <div class="card" style="padding:0;overflow:hidden">
-      <div style="display:grid;grid-template-columns:1fr 48px 48px 48px 48px 48px 52px 48px 70px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">
+      <div style="display:grid;grid-template-columns:${grid};padding:8px 14px;border-bottom:1px solid var(--border);font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">
+        <div></div>
         <div>Player</div><div style="text-align:center">PTS</div><div style="text-align:center">REB</div>
         <div style="text-align:center">AST</div><div style="text-align:center">STL</div><div style="text-align:center">BLK</div>
         <div style="text-align:center;color:var(--red)">FOUL</div><div style="text-align:center;color:var(--red)">TO</div>
         <div style="text-align:right">FP</div>
       </div>
-      ${roster.map(pid=>{
-        const p=PLAYER_MAP[pid]; if(!p) return '';
-        // Use snapshot delta (primary) — consistent with calcWeekScore
-        const snaps=state.statSnapshots||{};
-        const s=(snaps[week]||snaps[week-1]) ? getPlayerWeekStats(pid,week) : {};
-        const fp=fantasyPts(s);
-        return `<div style="display:grid;grid-template-columns:1fr 48px 48px 48px 48px 48px 52px 48px 70px;padding:11px 14px;border-bottom:1px solid var(--border);align-items:center">
+      ${rows.map(r => {
+        const counts = top5Set.has(r.pid);
+        const dimStyle = counts ? '' : 'opacity:.45';
+        const flagColor = counts ? 'var(--green)' : 'var(--muted)';
+        const flagText  = counts ? '✓' : '—';
+        const flagTitle = counts ? 'Counts toward team total' : 'Bench (top 5 only count)';
+        const s = r.s, p = r.p, fp = r.fp;
+        return `<div style="display:grid;grid-template-columns:${grid};padding:11px 14px;border-bottom:1px solid var(--border);align-items:center;${dimStyle}">
+          <div title="${flagTitle}" style="font-weight:900;font-size:.85rem;color:${flagColor};text-align:center">${flagText}</div>
           <div style="display:flex;align-items:center;gap:10px">
             <div style="width:36px;height:36px;border-radius:50%;background:${p.color}33;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:800;color:${p.color};flex-shrink:0">#${p.num}</div>
             <div>
@@ -1978,12 +1995,13 @@ function renderMyTeam(){
           ${['pts','reb','ast','stl','blk'].map(k=>`<div style="text-align:center;font-weight:700;color:${s[k]>0?'var(--text)':'var(--border)'}">${s[k]||'–'}</div>`).join('')}
           <div style="text-align:center;font-weight:700;color:${s.foul>0?'var(--red)':'var(--border)'}">${s.foul||'–'}</div>
           <div style="text-align:center;font-weight:700;color:${s.to>0?'var(--red)':'var(--border)'}">${s.to||'–'}</div>
-          <div style="text-align:right;font-weight:900;font-size:1rem;color:${fp>0?'var(--lblue)':fp<0?'var(--red)':'var(--muted)'}">${fp!==0?fp.toFixed(1):'–'}</div>
+          <div style="text-align:right;font-weight:900;font-size:1rem;color:${fp>0?(counts?'var(--lblue)':'var(--text)'):fp<0?'var(--red)':'var(--muted)'}">${fp!==0?fp.toFixed(1):'–'}</div>
         </div>`;
       }).join('')}
     </div>
-    <div style="margin-top:14px;padding:10px 14px;background:var(--surf);border:1px solid var(--border);border-radius:10px;font-size:.75rem;color:var(--muted)">
-      Stats are entered by the commissioner after each game. Fantasy points = PTS×1.0 + REB×1.2 + AST×1.5 + STL×2.0 + BLK×2.0
+    <div style="margin-top:14px;padding:10px 14px;background:var(--surf);border:1px solid var(--border);border-radius:10px;font-size:.75rem;color:var(--muted);line-height:1.55">
+      Only your top 5 performers each week (marked <span style="color:var(--green);font-weight:800">✓</span>) count toward your team total. The remaining 2 are bench depth in case someone underperforms.<br>
+      Fantasy points = PTS×1.0 + REB×1.2 + AST×1.5 + STL×2.0 + BLK×2.0 − FOUL×1.0 − TO×2.0
     </div>`;
 }
 
