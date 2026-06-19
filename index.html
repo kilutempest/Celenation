@@ -2837,8 +2837,37 @@ function renderAdminDraft(){
   const draft=state.draft[gid];
 
   if(!draft || !draft.started){
+    const proposed = draft?.proposedOrder || [];
+    const rolledOnce = proposed.length === selGroup.managers.length;
     return `
-      <div class="card" style="max-width:500px">
+      <style>
+        @keyframes draftLotteryPop {
+          0%   { opacity: 0; transform: translateY(-14px) scale(.7); filter: blur(4px); }
+          60%  { opacity: 1; transform: translateY(3px)   scale(1.08); filter: blur(0); }
+          100% { opacity: 1; transform: translateY(0)     scale(1);   filter: blur(0); }
+        }
+        @keyframes draftLotteryGlow {
+          0%, 100% { box-shadow: 0 0 12px rgba(255,184,0,.4), 0 0 30px rgba(255,184,0,.15); }
+          50%      { box-shadow: 0 0 22px rgba(255,184,0,.7), 0 0 50px rgba(255,184,0,.35); }
+        }
+        .lottery-row {
+          opacity: 0;
+          animation: draftLotteryPop .55s cubic-bezier(.34,1.56,.64,1) forwards;
+        }
+        .lottery-row-1st {
+          animation: draftLotteryPop .55s cubic-bezier(.34,1.56,.64,1) forwards,
+                     draftLotteryGlow 2s ease-in-out infinite;
+        }
+        .lottery-pick-num {
+          font-family: 'Russo One', sans-serif;
+          font-size: 1.05rem;
+          color: var(--gold);
+          width: 42px;
+          text-align: center;
+          flex-shrink: 0;
+        }
+      </style>
+      <div class="card" style="max-width:620px">
         <h3 style="font-weight:800;margin-bottom:14px">Start Draft</h3>
         <div class="fl">
           <label>Select Group</label>
@@ -2846,11 +2875,57 @@ function renderAdminDraft(){
             ${groups.map(g=>`<option value="${g.id}" ${g.id===gid?'selected':''}>${g.name}</option>`).join('')}
           </select>
         </div>
-        <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">
-          <strong>Snake draft:</strong> ${selGroup.managers.length} managers · 7 rounds · ${selGroup.managers.length*7} total picks<br>
-          Draft order is randomized. Everyone picks 7 players.
-        </p>
-        <button class="btn btn-blue" onclick="startDraft(${gid})">🏀 Start Draft</button>
+
+        <!-- Draft lottery card -->
+        <div style="background:linear-gradient(180deg,rgba(255,184,0,.06),var(--surf2));border:1px solid rgba(255,184,0,.2);border-radius:14px;padding:16px 18px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <div style="font-family:'Russo One',sans-serif;font-size:.95rem;font-weight:800;color:var(--gold);letter-spacing:.06em">🎰 Draft Order Lottery</div>
+            <button class="btn btn-outline btn-sm" onclick="randomizeDraftOrder(${gid})" style="font-size:.78rem">
+              🎲 ${rolledOnce ? 'Re-roll' : 'Randomize'}
+            </button>
+          </div>
+          ${rolledOnce ? (() => {
+            const total = proposed.length;
+            // Reveal order: pick #last first, pick #1 LAST for max drama.
+            // animation-delay for index i = (total - 1 - i) * 0.7s
+            const stagger = 0.7;
+            const rows = proposed.map((name, i) => {
+              const reverseIndex = total - 1 - i;
+              const delay = (reverseIndex * stagger).toFixed(2);
+              const isFirst = i === 0;
+              const rowClass = isFirst ? 'lottery-row lottery-row-1st' : 'lottery-row';
+              const bg = isFirst ? 'rgba(255,184,0,.18)' : 'rgba(0,0,0,.22)';
+              const border = isFirst ? '1.5px solid rgba(255,184,0,.6)' : '1px solid rgba(255,255,255,.05)';
+              const label = isFirst ? '🥇 1st pick' : i === 1 ? '🥈 2nd pick' : i === 2 ? '🥉 3rd pick' : `Pick ${i+1}`;
+              const nameSize = isFirst ? '1.15rem' : '.95rem';
+              return `
+                <div class="${rowClass}" style="animation-delay:${delay}s;display:flex;align-items:center;gap:12px;padding:${isFirst?'12px':'9px'} 12px;background:${bg};border:${border};border-radius:9px">
+                  <div class="lottery-pick-num">${isFirst?'🥇':i===1?'🥈':i===2?'🥉':'#'+(i+1)}</div>
+                  ${avatarCircle(name, isFirst?34:28)}
+                  <div style="font-weight:${isFirst?'900':'700'};font-size:${nameSize};flex:1;color:${isFirst?'var(--gold)':'var(--text)'}">${name}</div>
+                  <div style="font-size:.7rem;color:var(--muted);font-weight:700">${label}</div>
+                </div>`;
+            }).join('');
+            // Schedule the final-reveal "ding" sound to fire when row index 0
+            // animation kicks in (delay = (total-1)*stagger).
+            const finalDelayMs = Math.round((total - 1) * stagger * 1000);
+            setTimeout(() => { try { playTurnBeep(); } catch(e){} }, finalDelayMs);
+            return `
+              <div style="display:flex;flex-direction:column;gap:6px">${rows}</div>
+              <p style="font-size:.72rem;color:var(--muted);margin-top:12px;line-height:1.4;text-align:center">
+                Revealing from last pick → 1st pick. Snake order: round 2 reverses, etc. for ${selGroup.managers.length*7} total picks.
+              </p>`;
+          })() : `
+            <div style="text-align:center;padding:28px 10px;color:var(--muted);font-size:.85rem">
+              Click <strong style="color:var(--text)">🎲 Randomize</strong> to roll the draft order live.<br>
+              <span style="font-size:.72rem">Re-roll as many times as you like before starting.</span>
+            </div>
+          `}
+        </div>
+
+        <button class="btn btn-blue" style="width:100%;padding:12px;font-size:.95rem" onclick="startDraft(${gid})">
+          🏀 ${rolledOnce ? 'Start Draft with this order →' : 'Start Draft (random order) →'}
+        </button>
       </div>`;
   }
 
@@ -3237,13 +3312,27 @@ function createGroup(){
   setTimeout(()=>render(),1000);
 }
 
+// Admin-triggered: roll a fresh draft order and reveal it live in the admin
+// view. The order is parked on state.draft[gid].proposedOrder until the
+// admin commits with "Start Draft" — they can re-roll as many times as they
+// want (great for a live broadcast lottery moment).
+function randomizeDraftOrder(groupId){
+  const g = state.groups[groupId];
+  if(!g) return;
+  const shuffled = [...g.managers].sort(() => Math.random() - 0.5);
+  state.draft[groupId] = { started: false, proposedOrder: shuffled };
+  save(); render();
+}
+
 function startDraft(groupId){
-  const g=state.groups[groupId];
-  const order=snakeOrder(g.managers,7);
-  // Randomize first round
-  const shuffled=[...g.managers].sort(()=>Math.random()-.5);
-  const finalOrder=snakeOrder(shuffled,7);
-  state.draft[groupId]={ started:true, done:false, order:finalOrder, pickIdx:0, picks:[] };
+  const g = state.groups[groupId];
+  // Use a previously-rolled lottery order if present, else shuffle fresh.
+  const proposed = state.draft[groupId]?.proposedOrder;
+  const firstRound = (proposed && proposed.length === g.managers.length)
+    ? proposed
+    : [...g.managers].sort(() => Math.random() - 0.5);
+  const finalOrder = snakeOrder(firstRound, 7);
+  state.draft[groupId] = { started: true, done: false, order: finalOrder, pickIdx: 0, picks: [] };
   save(); render();
 }
 

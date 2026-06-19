@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CeleNation Fantasy — Release Summary</title>
+<style>
+  @page { size: Letter; margin: 0.65in 0.7in; }
+  :root {
+    --ink: #0f1730;
+    --muted: #5a6a85;
+    --line: #e2e6ee;
+    --soft: #f4f6fb;
+    --accent: #1d6affff;
+    --red: #d12d2d;
+    --gold: #b88c00;
+    --green: #1f8a4a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 11pt/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #fff;
+  }
+  .cover {
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 14px;
+    margin-bottom: 22px;
+  }
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 8.5pt;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-size: 22pt;
+    margin: 0 0 6px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 10pt;
+    margin-top: 4px;
+  }
+  h2 {
+    font-size: 14pt;
+    margin: 26px 0 4px;
+    color: var(--ink);
+    padding-bottom: 4px;
+    border-bottom: 1.5px solid var(--line);
+    page-break-after: avoid;
+  }
+  h2 .num {
+    color: var(--accent);
+    font-weight: 800;
+    margin-right: 8px;
+  }
+  h3 {
+    font-size: 11pt;
+    margin: 16px 0 4px;
+    color: var(--ink);
+    page-break-after: avoid;
+  }
+  p { margin: 6px 0 10px; }
+  ul {
+    margin: 6px 0 10px;
+    padding-left: 22px;
+  }
+  li { margin-bottom: 4px; }
+  .feature-summary {
+    background: var(--soft);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    margin: 8px 0 14px;
+    font-size: 10.5pt;
+  }
+  .feature-summary strong {
+    color: var(--ink);
+  }
+  .tag {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 7.5pt;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
+  .tag.fix { background: var(--green); }
+  .tag.security { background: var(--red); }
+  .tag.demo { background: var(--gold); }
+  .tag.infra { background: #555; }
+  .before-after {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 8px 0;
+  }
+  .before-after > div {
+    background: var(--soft);
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 10pt;
+  }
+  .before-after .b-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 7.5pt;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 3px;
+  }
+  .before-after .before .b-label { color: var(--red); }
+  .before-after .after .b-label { color: var(--green); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 10pt;
+  }
+  th, td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--soft);
+    font-weight: 700;
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  .key-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 18px;
+    margin: 10px 0;
+  }
+  .key-list .item {
+    padding: 6px 0 6px 18px;
+    border-left: 2px solid var(--accent);
+    padding-left: 10px;
+    font-size: 10pt;
+  }
+  .key-list .item strong { display: block; font-size: 10.5pt; margin-bottom: 1px; }
+  .key-list .item span { color: var(--muted); font-size: 9.5pt; }
+  .footer {
+    margin-top: 36px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 9pt;
+    text-align: center;
+  }
+  .section { page-break-inside: avoid; }
+  .pagebreak { page-break-before: always; }
+  code {
+    font-family: "Consolas", "Courier New", monospace;
+    background: var(--soft);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 9.5pt;
+    color: var(--ink);
+  }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="eyebrow">Product Update · Release Summary</div>
+  <h1>CeleNation Fantasy</h1>
+  <div class="meta">What changed in this release · Prepared for ownership review</div>
+</div>
+
+<p>
+  This release moves CeleNation Fantasy from a demo prototype to a production-ready paid product. The application now stores real accounts in the cloud, accepts secure card payments, gives commissioners full control over their league, and includes a marketing demo visitors can explore without signing up.
+</p>
+
+<div class="feature-summary">
+  <strong>Headline:</strong> Players can now sign up, pay the $35 season fee, and access their league from any device. Their roster, draft picks, and matchup results follow them everywhere — there is nothing for the commissioner to set up manually.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">01.</span> Real Accounts That Save Everywhere</h2>
+
+<p>
+  Previously, the app stored everything inside the browser. If a player signed up on their laptop, they could not sign in from their phone — and clearing the browser would erase their roster. The app has been rebuilt with a cloud database, so every account, every roster, and every draft pick is stored centrally and follows the player to any device.
+</p>
+
+<div class="before-after">
+  <div class="before">
+    <div class="b-label">Before</div>
+    Accounts lived only in the browser. Switching devices meant losing access. Clearing cookies erased everything.
+  </div>
+  <div class="after">
+    <div class="b-label">Now</div>
+    Sign in once, your league follows you. Phone, laptop, friend's computer — same league, same roster, instantly synced.
+  </div>
+</div>
+
+<h3>What this unlocks</h3>
+<ul>
+  <li>Players can use the app from any phone, tablet, or computer.</li>
+  <li>Rosters, draft picks, weekly stats, and transactions are stored securely in the cloud.</li>
+  <li>Other players' draft picks appear automatically on everyone's screen — no manual refresh needed.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">02.</span> Stripe Paywall for the $35 Season Fee <span class="tag">Revenue</span></h2>
+
+<p>
+  The signup form now collects payment before creating an account. Players enter their info, click <em>Continue to Payment ($35)</em>, complete the purchase on Stripe's secure checkout page, and are automatically signed in to a finished account.
+</p>
+
+<h3>How the payment flow works</h3>
+<ol>
+  <li>Player fills in username, password, security question, and avatar.</li>
+  <li>Clicks <em>Continue to Payment</em> — redirected to Stripe's hosted checkout.</li>
+  <li>Pays with any credit or debit card.</li>
+  <li>Returned to the app, signed in, ready to play.</li>
+</ol>
+
+<h3>Safety nets built in</h3>
+<ul>
+  <li><strong>Closed-tab protection:</strong> if a player closes their browser mid-payment, a Stripe webhook still creates the account on the server side — no support tickets, no lost customers.</li>
+  <li><strong>Duplicate-username protection:</strong> if two people pick the same name during checkout, only the first one is honored. The second gets a clear refund-eligibility message.</li>
+  <li><strong>Test-mode first:</strong> the entire system was validated in Stripe test mode before being switched to live keys for real money.</li>
+</ul>
+
+<div class="feature-summary">
+  <strong>Net effect:</strong> Every new account = $35 in revenue, collected automatically. Stripe handles the cards, the receipts, the refunds, and the disputes. The owner sees the money land in their bank within 2 business days of each charge.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">03.</span> Commissioner Tools <span class="tag">Admin</span></h2>
+
+<p>
+  The admin panel now includes a complete set of tools so the commissioner is never blocked by technical issues. Every common request a player might make can be solved without touching the database.
+</p>
+
+<table>
+  <thead>
+    <tr><th style="width:35%">Feature</th><th>What it does</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Grant Free Account</strong></td>
+      <td>Create an account for any player without charging them. Use for sponsors, comps, or family members. Optional checkbox grants them admin rights too.</td>
+    </tr>
+    <tr>
+      <td><strong>Reset a Player's Password</strong></td>
+      <td>If a player loses their password and can't remember their security answer, the commissioner can reset it to anything in two clicks.</td>
+    </tr>
+    <tr>
+      <td><strong>Admin Bypass Code</strong></td>
+      <td>A private code (set by the owner) that lets fellow commissioners sign up as admins without payment. Skips Stripe entirely.</td>
+    </tr>
+    <tr>
+      <td><strong>Cloud Connection Status</strong></td>
+      <td>One-glance health check showing whether the league is online and saving correctly.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">04.</span> Account Self-Service for Players</h2>
+
+<p>
+  Players now have everything they need to manage their account without contacting the commissioner.
+</p>
+
+<div class="key-list">
+  <div class="item">
+    <strong>🔑 Change Password</strong>
+    <span>Click the key icon in the top right. Modal asks for current password and new one.</span>
+  </div>
+  <div class="item">
+    <strong>Forgot Password</strong>
+    <span>Recovery via security question chosen at signup. Resets without commissioner help.</span>
+  </div>
+  <div class="item">
+    <strong>Security Question</strong>
+    <span>Chosen by the player at signup. Hashed and stored — even an admin can't read the answer.</span>
+  </div>
+  <div class="item">
+    <strong>Sign Out / In</strong>
+    <span>Standard nav button. Works across devices since accounts now live in the cloud.</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="pagebreak"></div>
+<h2 class="section"><span class="num">05.</span> Scoring Fix — Top 5 of 7 Players <span class="tag fix">Bug Fix</span></h2>
+
+<p>
+  The original code summed all 7 roster players when calculating weekly fantasy points. This was incorrect — only the <strong>5 best performers each week</strong> should count toward a team's score. This has been corrected throughout the application.
+</p>
+
+<div class="before-after">
+  <div class="before">
+    <div class="b-label">Before</div>
+    All 7 players' fantasy points were added together for the team total. There was no incentive to draft depth — every player counted equally.
+  </div>
+  <div class="after">
+    <div class="b-label">Now</div>
+    The 5 best performers each week count. The remaining 2 are bench depth, ready to step in if a star player has an off week. Visible on the <em>My Team</em> page with ✓ marks.
+  </div>
+</div>
+
+<h3>Where this applies</h3>
+<ul>
+  <li><strong>My Team page:</strong> roster now sorted by fantasy points; top 5 are marked with a green ✓, bottom 2 are dimmed.</li>
+  <li><strong>Matchups:</strong> the week's score for both teams uses only top 5.</li>
+  <li><strong>Standings:</strong> wins and losses now reflect proper top-5 scoring.</li>
+  <li><strong>Championship bracket:</strong> playoff scoring is also top-5-only.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">06.</span> Championship Bracket — Top 4 From Each Group</h2>
+
+<p>
+  The playoff format now matches the league rules:
+</p>
+
+<ul>
+  <li>Two groups of 8 players each play a 7-week round robin.</li>
+  <li>The <strong>top 4 from each group</strong> qualify for the championship — 8 qualifiers total.</li>
+  <li>These 8 players run a fresh re-draft from the full player pool (the "championship draft").</li>
+  <li>Standard 8-team single-elimination bracket: <strong>Quarterfinals → Semifinals → Final.</strong></li>
+</ul>
+
+<h3>Seeding</h3>
+<p>
+  The bracket uses cross-group seeding so the two #1 seeds can only meet in the Final, ensuring the best matchups happen at the right time:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Round</th><th>Match</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>QF1</td><td>Group 1 #1 vs Group 2 #4</td></tr>
+    <tr><td>QF2</td><td>Group 1 #3 vs Group 2 #2</td></tr>
+    <tr><td>QF3</td><td>Group 2 #1 vs Group 1 #4</td></tr>
+    <tr><td>QF4</td><td>Group 2 #3 vs Group 1 #2</td></tr>
+    <tr><td>SF1</td><td>Winner QF1 vs Winner QF2</td></tr>
+    <tr><td>SF2</td><td>Winner QF3 vs Winner QF4</td></tr>
+    <tr><td>Final</td><td>SF1 winner vs SF2 winner — Champion crowned</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">07.</span> Live Draft Experience</h2>
+
+<p>
+  The draft room now feels alive even with everyone in different rooms.
+</p>
+
+<div class="key-list">
+  <div class="item">
+    <strong>🔔 Turn Notification</strong>
+    <span>A two-note ding-ding sound plays when it becomes your turn to pick.</span>
+  </div>
+  <div class="item">
+    <strong>📑 Tab Title Flash</strong>
+    <span>The browser tab title flashes "🏀 YOUR PICK!" so you notice even if minimized.</span>
+  </div>
+  <div class="item">
+    <strong>🔄 Live Pick Sync</strong>
+    <span>Other players' picks appear on every screen within ~4 seconds — no refresh needed.</span>
+  </div>
+  <div class="item">
+    <strong>⏱ Shot Clock</strong>
+    <span>60-second auto-pick if a player is away from their phone. Keeps the draft moving.</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">08.</span> Marketing Demo at <code>/demo</code> <span class="tag demo">Marketing</span></h2>
+
+<p>
+  A self-contained demo version of the app lives at <strong>celenationfantasy.netlify.app/demo</strong>. Anyone can visit, poke around, and see the full experience without signing up or paying anything.
+</p>
+
+<h3>How the demo works</h3>
+<ul>
+  <li><strong>No sign-up required.</strong> The visitor lands directly inside a fully populated league as a fake user ("DemoYou").</li>
+  <li><strong>Mid-season feel.</strong> Eight fake players, completed draft, week 4 of 7, partial matchups in progress, realistic standings.</li>
+  <li><strong>Stage toggle.</strong> A floating button in the corner lets visitors flip between <em>Mid-Season</em> view and <em>Group Stage Complete</em> (final standings).</li>
+  <li><strong>Zero risk.</strong> Nothing the visitor does is saved anywhere. A page refresh restores the pristine demo. Real users and real data are completely isolated.</li>
+  <li><strong>Sales link built in.</strong> The demo banner includes a "Try the real app →" link directing visitors to the real signup.</li>
+</ul>
+
+<div class="feature-summary">
+  <strong>Use this for:</strong> social media posts, sponsor pitches, recruiting new players, league-launch marketing. Send anyone the link — they'll get an instant tour of what the product does.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">09.</span> Security &amp; Reliability <span class="tag security">Security</span></h2>
+
+<h3>Password security</h3>
+<ul>
+  <li>Passwords are <strong>never stored in plain text.</strong> They are hashed with a per-account salt using scrypt — the industry standard for password storage.</li>
+  <li>Password hashes are <strong>not readable from the browser.</strong> Only the server-side functions (which have a separate secret key) can compare them. A leak of the public site's code would not expose any passwords.</li>
+</ul>
+
+<h3>Stripe integration security</h3>
+<ul>
+  <li>Card data is handled entirely by Stripe. It never touches our servers.</li>
+  <li>Stripe webhook signatures are cryptographically verified, so no one can forge a fake "payment succeeded" event.</li>
+  <li>The Stripe secret key, Supabase service key, and admin bypass code are stored as environment variables — they are not in the public code.</li>
+</ul>
+
+<h3>Resilience</h3>
+<ul>
+  <li><strong>Two independent paths</strong> create the account after payment: the success page redirect AND the Stripe webhook. Whichever fires first wins. The other one safely no-ops.</li>
+  <li>A pre-existing latent bug in the scoring code (which would have crashed the app once any real draft completed) was caught and fixed before going live.</li>
+</ul>
+
+<!-- ============================================================ -->
+<div class="pagebreak"></div>
+<h2 class="section"><span class="num">10.</span> Infrastructure &amp; Deployment <span class="tag infra">Ops</span></h2>
+
+<p>
+  The application now deploys automatically when code is updated, eliminating manual upload steps and reducing the chance of mistakes.
+</p>
+
+<div class="key-list">
+  <div class="item">
+    <strong>GitHub Repository</strong>
+    <span>All code lives in a private GitHub repo with full version history.</span>
+  </div>
+  <div class="item">
+    <strong>Netlify Auto-Deploy</strong>
+    <span>Pushing a change to GitHub triggers a deploy in ~30 seconds. Zero manual steps.</span>
+  </div>
+  <div class="item">
+    <strong>Supabase Cloud Database</strong>
+    <span>Hosted PostgreSQL on Supabase's free tier. Handles all account and league data.</span>
+  </div>
+  <div class="item">
+    <strong>Netlify Functions</strong>
+    <span>Server-side logic (login, signup, password reset, payment finalization) runs as serverless functions.</span>
+  </div>
+</div>
+
+<h3>Hosting cost summary</h3>
+<table>
+  <thead>
+    <tr><th>Service</th><th>Use</th><th>Cost</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Netlify</td><td>Web hosting + serverless functions</td><td>Free tier (sufficient for current scale)</td></tr>
+    <tr><td>Supabase</td><td>Database for accounts &amp; league data</td><td>Free tier (50,000 requests/day)</td></tr>
+    <tr><td>Stripe</td><td>Payment processing</td><td>2.9% + $0.30 per transaction (~$1.32 per $35 sale)</td></tr>
+    <tr><td>GitHub</td><td>Code storage</td><td>Free (private repo)</td></tr>
+    <tr><td colspan="2"><strong>Total fixed monthly cost</strong></td><td><strong>$0</strong></td></tr>
+  </tbody>
+</table>
+
+<p style="margin-top:10px">
+  <strong>Net revenue per signup:</strong> $35.00 − $1.32 Stripe fee = <strong>$33.68 per player</strong>.
+</p>
+
+<!-- ============================================================ -->
+<h2 class="section"><span class="num">11.</span> What's Next</h2>
+
+<p>Optional improvements available on request:</p>
+
+<ul>
+  <li><strong>Email-based password reset.</strong> Currently uses security questions. Email reset (via a service like Resend) would feel more familiar to players.</li>
+  <li><strong>Multi-group demo &amp; bracket showcase.</strong> The current demo has one group. A "Playoffs" demo stage would auto-generate two complete groups with a populated bracket — great for marketing.</li>
+  <li><strong>Profile editing.</strong> Right now players can change their password. Avatar upload and username changes could be added.</li>
+  <li><strong>Push notifications.</strong> The browser tab flashes on a draft turn. Real push notifications (so players get pinged even when the app is closed) would lift the experience.</li>
+  <li><strong>Tax handling.</strong> Stripe Tax can be enabled if sales volume grows enough to need it.</li>
+</ul>
+
+<div class="footer">
+  CeleNation Fantasy · Release Summary · Live at celenationfantasy.netlify.app · Demo at celenationfantasy.netlify.app/demo
+</div>
+
+</body>
+</html>
