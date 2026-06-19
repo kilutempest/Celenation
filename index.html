@@ -3045,8 +3045,8 @@ function renderAdminBrackets(){
         <div class="card" style="margin-bottom:16px">
           <h3 style="font-weight:800;margin-bottom:8px">Generate Championship Bracket</h3>
           <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
-            Takes the top team from each completed group and creates a bracket.<br>
-            ${groups.length} group(s) ready · Need at least 2.
+            Takes the top ${ADVANCERS_PER_GROUP} teams from each completed group (${ADVANCERS_PER_GROUP * 2} qualifiers total) and builds an 8-team single-elim bracket.<br>
+            ${groups.length} group(s) finished week 7 · Need 2 groups complete.
           </p>
           <button class="btn btn-blue" onclick="generateBracket()" ${canGenerate?'':'disabled'}>
             🏆 Generate Bracket
