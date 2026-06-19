@@ -2423,7 +2423,7 @@ function renderGroups(){
     ${b?.generated ? `
       <div class="card" style="margin-bottom:24px;border-color:rgba(255,184,0,.3);background:linear-gradient(135deg,rgba(255,184,0,.05),rgba(11,21,32,.95))">
         <div style="font-family:'Russo One',sans-serif;font-size:.8rem;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">
-          🏆 Championship Bracket — Group Winners
+          🏆 Championship Bracket — Top ${ADVANCERS_PER_GROUP} from each group
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px">
           ${(b.rounds[0]||[]).map((m,i)=>`
@@ -2513,24 +2513,28 @@ function renderBracket(){
     <h1 class="page-title">Championship Bracket</h1>
     <div class="card" style="text-align:center;padding:48px;color:var(--muted)">
       🏆<br><br>The bracket will appear here once all group stages are complete.<br>
-      <small>8 group winners advance to Quarterfinals → Semifinals → Championship</small>
+      <small>Top ${ADVANCERS_PER_GROUP} from each group advance to the championship bracket</small>
     </div>`;
 
-  const roundNames=['Quarterfinals','Semifinals','Championship'];
+  // Label rounds from the back: the last round is always the Final, the one
+  // before is the Semis, etc. Works whether the bracket has 1, 2, or 3 rounds.
+  const ROUND_LABELS = ['Championship', 'Semifinals', 'Quarterfinals', 'Round of 16'];
+  const roundNames = b.rounds.map((_, i) => ROUND_LABELS[b.rounds.length - 1 - i] || `Round ${i+1}`);
   const champDraftDone=state.champDraft?.done;
   const champSnap=state.statSnapshots?.['champ']||null;
+  const qualifierCount = (b.rounds[0]||[]).reduce((n, m) => n + (m.m1 && m.m1 !== 'TBD' ? 1 : 0) + (m.m2 && m.m2 !== 'TBD' ? 1 : 0), 0);
 
   // Championship week number (just use a special "week 8" key)
   const CHAMP_WEEK='champ';
 
   return `
     <h1 class="page-title">🏆 Championship Bracket</h1>
-    <p class="page-sub">Group stage winners · ${champDraftDone?'Championship rosters active':'Championship draft pending'}</p>
+    <p class="page-sub">Top ${ADVANCERS_PER_GROUP} from each group · ${champDraftDone?'Championship rosters active':'Championship draft pending'}</p>
 
     ${!champDraftDone?`
       <div style="background:rgba(255,184,0,.08);border:1px solid rgba(255,184,0,.25);border-radius:12px;padding:14px 18px;margin-bottom:20px;font-size:.85rem;color:var(--muted)">
         ⚡ <strong style="color:var(--gold)">Championship Re-Draft required.</strong>
-        The 8 group winners must complete a new snake draft before bracket play begins.
+        The ${qualifierCount} qualifiers must complete a new snake draft before bracket play begins.
         Commissioner: Admin → 🏆 Champ Draft.
       </div>
     `:''}
@@ -3348,26 +3352,58 @@ async function liveRefreshStats(){
   render();
 }
 
+// Top N from each group advance to the championship bracket. With 2 groups
+// of 8 and N=4 you get the standard 8-team single-elim playoff.
+const ADVANCERS_PER_GROUP = 4;
+
 function generateBracket(){
-  const groups=Object.values(state.groups).filter(g=>g.week>=7&&g.draftDone);
-  // Get winner of each group (top by standings)
-  const winners=groups.map(g=>getGroupStandings(g.id)[0]?.username).filter(Boolean);
-  // Pad to power of 2
-  while(winners.length<2) winners.push('TBD');
+  const groups = Object.values(state.groups).filter(g => g.week >= 7 && g.draftDone);
 
-  // QF (4 games if 8 teams, fewer if less)
-  const qf=[];
-  for(let i=0;i<winners.length;i+=2){
-    qf.push({m1:winners[i],m2:winners[i+1]||'TBD',s1:null,s2:null,winner:null});
+  // Top N seeds per group, ordered by final standings.
+  const advancersByGroup = groups.map(g =>
+    getGroupStandings(g.id).slice(0, ADVANCERS_PER_GROUP).map(r => r.username)
+  );
+
+  // 2 groups × 4 advancers = canonical 8-team cross seeding. The two #1 seeds
+  // can only meet in the Final.
+  let teams;
+  if(advancersByGroup.length === 2 &&
+     advancersByGroup[0].length === 4 &&
+     advancersByGroup[1].length === 4){
+    const [a1, a2, a3, a4] = advancersByGroup[0];
+    const [b1, b2, b3, b4] = advancersByGroup[1];
+    teams = [
+      a1, b4,  // QF1: G1#1 vs G2#4
+      a3, b2,  // QF2: G1#3 vs G2#2
+      b1, a4,  // QF3: G2#1 vs G1#4
+      b3, a2,  // QF4: G2#3 vs G1#2
+    ];
+  } else {
+    // Generic fallback (1 group, or non-standard sizes).
+    teams = advancersByGroup.flat();
   }
-  const sf=Array.from({length:Math.ceil(qf.length/2)},()=>({m1:null,m2:null,s1:null,s2:null,winner:null}));
-  const fin=[{m1:null,m2:null,s1:null,s2:null,winner:null}];
 
-  const rounds=[qf];
-  if(qf.length>1) rounds.push(sf);
-  if(qf.length>2) rounds.push(fin);
+  if(teams.length < 2) teams.push('TBD');
+  // Round up to next power of 2 (4, 8, 16…) so the bracket is balanced.
+  const pow2 = Math.pow(2, Math.ceil(Math.log2(teams.length)));
+  while(teams.length < pow2) teams.push('TBD');
 
-  state.bracket={generated:true,rounds};
+  // Round 1 pairings.
+  const rounds = [];
+  const round1 = [];
+  for(let i = 0; i < teams.length; i += 2){
+    round1.push({m1: teams[i], m2: teams[i+1] || 'TBD', s1: null, s2: null, winner: null});
+  }
+  rounds.push(round1);
+
+  // Subsequent rounds, empty until winners advance.
+  let n = round1.length;
+  while(n > 1){
+    n = Math.ceil(n / 2);
+    rounds.push(Array.from({length: n}, () => ({m1: null, m2: null, s1: null, s2: null, winner: null})));
+  }
+
+  state.bracket = {generated: true, rounds};
   save(); render();
 }
 
