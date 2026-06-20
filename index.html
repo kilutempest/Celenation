@@ -916,13 +916,32 @@ function rebuildPlayerIndex(){
   PLAYER_MAP = Object.fromEntries(ALL_PLAYERS.map(p=>[p.id,p]));
 }
 
+// Try a direct fetch first, then walk through CORS proxies. RecLeague does
+// not send CORS headers, so the direct attempt usually fails — but if their
+// API ever adds them we'll skip the proxy hop. The first proxy that returns
+// a 2xx response wins.
+const CORS_PROXIES = [
+  url => 'https://corsproxy.io/?url=' + encodeURIComponent(url),
+  url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  url => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(url),
+];
+
 async function safeFetch(url){
+  // 1. Direct
   try{
-    const r = await fetch(url,{mode:'cors'});
+    const r = await fetch(url, {mode: 'cors'});
     if(r.ok) return r;
   }catch(e){}
-  // CORS proxy fallback
-  return fetch(CORS_PROXY+encodeURIComponent(url));
+  // 2. Walk the proxy list
+  let lastErr = null;
+  for(const buildUrl of CORS_PROXIES){
+    try{
+      const r = await fetch(buildUrl(url));
+      if(r.ok) return r;
+      lastErr = new Error(`HTTP ${r.status} via ${buildUrl(url).split('?')[0]}`);
+    }catch(e){ lastErr = e; }
+  }
+  throw lastErr || new Error('All proxies failed');
 }
 
 // Parse season totals HTML → { playerId: {pts,reb,ast,stl,blk} }
@@ -969,15 +988,17 @@ async function syncFromRecLeague(force=false){
   }
   // Fetch season totals (best-effort — silently fails if CORS blocks)
   let totals={};
+  let fetchError=null;
   try{
     const r=await safeFetch(TOTALS_URL);
     totals=parseTotals(await r.text());
   }catch(e){
-    return {source:'offline',count:ALL_PLAYERS.length};
+    fetchError = e?.message || String(e);
+    return {source:'offline',count:ALL_PLAYERS.length,error:fetchError};
   }
 
   if(Object.keys(totals).length===0){
-    return {source:'no_stats_yet',count:ALL_PLAYERS.length};
+    return {source:'no_stats_yet',count:ALL_PLAYERS.length,error:'Stats page returned no rows (column structure may have changed).'};
   }
 
   // Patch stats onto existing players
@@ -1768,13 +1789,13 @@ function render(){
   // Refresh mobile bottom nav state
   if(me) refreshMobileNav();
 
-  // Timer: find ANY active draft across all groups (works for admin + players)
+  // Find any active draft (used for turn notifications + live polling).
+  // Auto-pick timer is disabled — admin drives the draft manually.
   let _activeDraft=null, _activeDraftGid=null;
   Object.entries(state.draft||{}).forEach(([gid,d])=>{
     if(d?.started&&!d?.done){ _activeDraft=d; _activeDraftGid=parseInt(gid); }
   });
-  if(_activeDraft) startDraftTimer(_activeDraftGid, _activeDraft.pickIdx);
-  else stopDraftTimer();
+  stopDraftTimer();
 
   // Turn notification + live cloud polling for active drafts.
   checkMyTurnNotify(_activeDraft);
@@ -2144,52 +2165,45 @@ function renderPlayerDraft(){
   return `
     <h1 class="page-title">🏀 Live Draft — ${g.name}</h1>
 
-    <!-- Who's on the clock -->
+    <!-- Who's on the clock — players watch only, the commissioner makes picks -->
     <div class="on-the-clock" style="${isMyTurn?'border-color:var(--green);animation:none;background:rgba(0,232,122,.1)':''}">
-      <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;text-align:center">
         <div>
           ${isMyTurn
-            ? `<div class="clock-label" style="color:var(--green);text-shadow:0 0 10px var(--green)">⚡ IT'S YOUR PICK ⚡</div>`
+            ? `<div class="clock-label" style="color:var(--green);text-shadow:0 0 10px var(--green)">⚡ YOU'RE UP NEXT ⚡</div>`
             : `<div class="clock-label">⚡ ON THE CLOCK ⚡</div>`}
           <div class="clock-name" style="${isMyTurn?'color:var(--green);text-shadow:0 0 15px rgba(0,232,122,.5)':''}">
             ${currentManager}
           </div>
           <div class="clock-sub">Round ${round} · Pick ${pick} of ${g.managers.length} · Overall #${draft.pickIdx+1} of ${g.managers.length*7}</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:8px;font-weight:700;letter-spacing:.04em">
+            🎙 Commissioner is drafting for ${currentManager}
+          </div>
         </div>
-        <div style="text-align:center;flex-shrink:0">
-          <div id="draftTimer" style="font-family:'Orbitron',monospace;font-size:2.5rem;font-weight:900;color:var(--text);transition:color .3s">${DRAFT_TIMER.pickIdx===draft.pickIdx?DRAFT_TIMER.sec:60}s</div>
-          <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Auto-pick</div>
-        </div>
-      </div>
-      <div style="margin-top:12px;background:rgba(255,255,255,.1);border-radius:20px;height:4px;overflow:hidden">
-        <div id="draftTimerBar" style="height:100%;width:${DRAFT_TIMER.pickIdx===draft.pickIdx?(DRAFT_TIMER.sec/60*100):100}%;background:linear-gradient(90deg,var(--red),var(--gold),var(--green));transition:width 1s linear;border-radius:20px"></div>
       </div>
     </div>
 
     <div class="draft-board">
-      <!-- Available players -->
+      <!-- Available players (read-only view) -->
       <div class="player-list">
         <div class="filter-bar">
           <input placeholder="Search players…" value="${filterQ}" oninput="window._pdFilter=this.value;render()">
           ${['ALL','PG','SG','SF','PF','C'].map(pos=>
             `<button class="filter-btn ${filterPos===pos?'active':''}" onclick="window._pdPos='${pos}';render()">${pos}</button>`
           ).join('')}
-          ${!isMyTurn?`<span style="font-size:.75rem;color:var(--muted);padding:4px 8px">Waiting for ${currentManager}…</span>`:''}
+          <span style="font-size:.75rem;color:var(--muted);padding:4px 8px">Watching ${currentManager}'s turn…</span>
         </div>
 
-        <div style="display:grid;grid-template-columns:24px 1fr 50px 50px 50px 65px ${isMyTurn?'70px':''};padding:6px 14px;font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border)">
+        <div style="display:grid;grid-template-columns:24px 1fr 50px 50px 50px 65px;padding:6px 14px;font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border)">
           <div>#</div><div>Player</div>
           <div style="text-align:center" class="draft-col-hide">PPG</div>
           <div style="text-align:center" class="draft-col-hide">RPG</div>
           <div style="text-align:center" class="draft-col-hide">APG</div>
           <div style="text-align:right">FVal</div>
-          ${isMyTurn?'<div></div>':''}
         </div>
 
         ${available.map(p=>`
-          <div class="player-pick-row" style="${isMyTurn?'cursor:pointer':''}min-height:52px" onclick="${isMyTurn?`playerSelfPick(${p.id})`:''}"
-            onmouseover="${isMyTurn?"this.style.background='rgba(0,232,122,.1)'":''}'"
-            onmouseout="${isMyTurn?"this.style.background=''":''}'">
+          <div class="player-pick-row" style="min-height:52px;cursor:default">
             <div style="width:20px;font-size:.7rem;color:${p.rank<=10?'var(--gold)':'var(--muted)'}">${p.rank<=10?'🔥':p.rank}</div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
@@ -2199,7 +2213,6 @@ function renderPlayerDraft(){
             <div style="text-align:center;font-size:.78rem" class="draft-col-hide">${p.rpg||'–'}</div>
             <div style="text-align:center;font-size:.78rem" class="draft-col-hide">${p.apg||'–'}</div>
             <div style="text-align:right;font-weight:800;font-size:.9rem;color:var(--lblue)">${playerValue(p).toFixed(1)}</div>
-            ${isMyTurn?`<div><button class="btn btn-green btn-sm" onclick="event.stopPropagation();playerSelfPick(${p.id})" style="padding:8px 10px;font-size:.8rem">Draft</button></div>`:''}
           </div>
         `).join('')}
       </div>
@@ -2734,14 +2747,22 @@ async function adminSyncRosters(){
   if(btn){ btn.disabled=true; btn.textContent='Syncing…'; }
   const result = await syncFromRecLeague(true);
   if(btn){ btn.disabled=false; btn.textContent='🔄 Sync Rosters Now'; }
-  if(msg){
-    if(result.error){
-      msg.style.color='var(--red)';
-      msg.textContent='❌ '+result.error;
-    } else {
-      msg.style.color='var(--green)';
-      msg.textContent=`✅ Synced ${result.count} players across ${result.teams} teams from RecLeague.net Season 10.`;
-    }
+  if(!msg) return;
+  if(result.source === 'live'){
+    msg.style.color='var(--green)';
+    msg.innerHTML = `✅ Synced live stats for ${result.count} players from RecLeague.net.`;
+  } else if(result.source === 'cache'){
+    msg.style.color='var(--muted)';
+    msg.innerHTML = `ℹ Using cached stats (${result.count} players). Cache is still fresh — try again later.`;
+  } else if(result.source === 'no_stats_yet'){
+    msg.style.color='var(--gold)';
+    msg.innerHTML = `⚠ RecLeague returned an empty stats table. ${result.error || 'Season may not have started, or the page layout changed.'}`;
+  } else if(result.source === 'offline'){
+    msg.style.color='var(--red)';
+    msg.innerHTML = `❌ Couldn't reach RecLeague.net.<br><span style="font-size:.75rem;color:var(--muted)">Detail: ${result.error || 'all proxies failed'}</span><br><span style="font-size:.75rem;color:var(--muted)">The hardcoded Season 10 roster is still loaded — draft can proceed without live stats.</span>`;
+  } else {
+    msg.style.color='var(--muted)';
+    msg.innerHTML = `Sync result: ${result.source} (${result.count} players).`;
   }
 }
 
@@ -2810,12 +2831,15 @@ function renderAdminGroups(){
         ${groups.length===0?`<p style="color:var(--muted)">No groups yet.</p>`:
           groups.map(g=>`
             <div class="card" style="margin-bottom:10px">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px">
                 <div>
                   <div style="font-weight:800">${g.name}</div>
                   <div style="font-size:.75rem;color:var(--muted)">${g.managers.length} managers · Week ${g.week}</div>
                 </div>
-                <span class="badge ${g.draftDone?'b-green':'b-gold'}">${g.draftDone?'Draft Complete':'Pending Draft'}</span>
+                <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+                  <span class="badge ${g.draftDone?'b-green':'b-gold'}">${g.draftDone?'Draft Complete':'Pending Draft'}</span>
+                  <button onclick="deleteGroup(${g.id})" title="Delete this group" style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);color:var(--red);padding:4px 8px;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:700">🗑</button>
+                </div>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:6px">
                 ${g.managers.map(m=>`<span class="badge b-gray">${m}</span>`).join('')}
@@ -2951,17 +2975,17 @@ function renderAdminDraft(){
   return `
     ${!draft.done ? `
       <div class="on-the-clock">
-        <div style="display:flex;align-items:center;justify-content:center;gap:20px">
-          <div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap">
+          <div style="text-align:center">
             <div class="clock-label">⚡ ON THE CLOCK ⚡</div>
             <div class="clock-name">${currentManager}</div>
             <div class="clock-sub">Round ${round} · Pick ${pick} of ${selGroup.managers.length} · Overall pick #${draft.pickIdx+1}</div>
           </div>
-          <div style="text-align:center;flex-shrink:0">
-            ${shotClockHTML()}
-          </div>
         </div>
-        ${shotClockBarHTML()}
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap">
+          ${draft.picks.length>0?`<button class="btn btn-outline btn-sm" onclick="undoLastPick(${gid})" title="Take back the most recent pick">↶ Undo Last Pick</button>`:''}
+          <button class="btn btn-outline btn-sm" onclick="resetDraft(${gid})" style="color:var(--red);border-color:rgba(255,80,80,.4)" title="Clear all picks and start over">⟲ Reset Draft</button>
+        </div>
       </div>
     ` : `
       <div style="background:rgba(16,185,129,.1);border:1px solid var(--green);border-radius:14px;padding:20px;text-align:center;margin-bottom:14px">
@@ -3333,6 +3357,71 @@ function startDraft(groupId){
     : [...g.managers].sort(() => Math.random() - 0.5);
   const finalOrder = snakeOrder(firstRound, 7);
   state.draft[groupId] = { started: true, done: false, order: finalOrder, pickIdx: 0, picks: [] };
+  // Reset any previous rosters for this group's managers so a redo is clean.
+  g.managers.forEach(m => { state.rosters[m] = []; });
+  save(); render();
+}
+
+// Take back the most recent pick. Removes from picks list, rolls back pickIdx,
+// and removes the player from that manager's roster.
+function undoLastPick(groupId){
+  const d = state.draft[groupId];
+  if(!d || !d.picks?.length) return;
+  const last = d.picks.pop();
+  d.pickIdx = Math.max(0, d.pickIdx - 1);
+  d.done = false;
+  if(state.rosters[last.manager]){
+    const i = state.rosters[last.manager].lastIndexOf(last.playerId);
+    if(i >= 0) state.rosters[last.manager].splice(i, 1);
+  }
+  // Also un-flag the group as drafted if it was previously marked done.
+  const g = state.groups[groupId];
+  if(g) g.draftDone = false;
+  save(); render();
+}
+
+// Clear all picks and rosters for this group and put the draft back to pick #1.
+// Order stays the same — the lottery doesn't need to re-roll.
+function resetDraft(groupId){
+  if(!confirm('Reset this draft? All picks will be cleared and we go back to pick #1. The draft order stays the same.')) return;
+  const d = state.draft[groupId];
+  if(!d) return;
+  const g = state.groups[groupId];
+  if(g){
+    g.managers.forEach(m => { state.rosters[m] = []; });
+    g.draftDone = false;
+  }
+  d.picks = [];
+  d.pickIdx = 0;
+  d.done = false;
+  save(); render();
+}
+
+// Permanently remove a group: its draft, matchups, transactions, and roster
+// entries for its managers. Users in the group go back to no-group state.
+function deleteGroup(groupId){
+  const g = state.groups[groupId];
+  if(!g) return;
+  if(!confirm(`Delete "${g.name}"? This wipes its draft, rosters, matchups, and transactions. Cannot be undone.`)) return;
+
+  g.managers.forEach(m => {
+    if(state.users[m]) state.users[m].groupId = null;
+    delete state.rosters[m];
+  });
+  delete state.draft[groupId];
+  // Wipe matchups for this group
+  Object.keys(state.matchups || {}).forEach(k => {
+    if(k.startsWith(`g${groupId}_`)) delete state.matchups[k];
+  });
+  // Remove this group's transactions
+  state.transactions = (state.transactions || []).filter(t => t.groupId !== groupId);
+  delete state.groups[groupId];
+  // Also clear champ-bracket if it referenced this group's data
+  if(state.bracket?.generated){
+    state.bracket = {rounds: [], generated: false};
+    state.champDraft = null;
+    state.champRosters = {};
+  }
   save(); render();
 }
 
