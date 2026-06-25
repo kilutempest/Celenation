@@ -1326,17 +1326,46 @@ function checkMyTurnNotify(activeDraft){
 // players show up without manual refresh.
 let _draftPollTimer = null;
 let _draftPollBusy = false;
+let _lastLocalChange = 0;
+let _lastCloudFingerprint = '';
+
+// Cheap fingerprint of the parts of state that matter for draft polling.
+// If this matches across two polls, nothing relevant has changed and we can
+// safely skip the re-render (which preserves scroll position + selections).
+function stateFingerprint(s){
+  if(!s) return '';
+  const draftSummary = Object.entries(s.draft || {})
+    .map(([gid, d]) => `${gid}:${d?.picks?.length||0}/${d?.pickIdx||0}/${d?.started?1:0}/${d?.done?1:0}/${(d?.proposedOrder||[]).join(',')}`)
+    .join('|');
+  const txCount = (s.transactions || []).length;
+  const usersCount = Object.keys(s.users || {}).length;
+  const rosterSig = Object.entries(s.rosters || {})
+    .map(([u, arr]) => `${u}:${(arr||[]).length}`).join(',');
+  const weeks = Object.entries(s.groups || {}).map(([gid, g]) => `${gid}w${g.week||0}`).join(',');
+  return `${draftSummary}#${txCount}#${usersCount}#${rosterSig}#${weeks}`;
+}
+
 function startDraftPolling(){
   if(_draftPollTimer) return;
   _draftPollTimer = setInterval(async ()=>{
     if(_draftPollBusy) return;
+    // Don't pull from cloud right after a local change — the debounced save
+    // may not have landed yet, so cloud would still be stale and the merge
+    // would overwrite our fresh local data (looks like the pick "deselects").
+    if(Date.now() - _lastLocalChange < 2500) return;
     _draftPollBusy = true;
     try{
       const cloud = await cloudFetchState();
-      if(cloud){
-        mergeCloudState(cloud);
-        render();
+      if(!cloud) return;
+      const cloudFp = stateFingerprint(cloud);
+      if(cloudFp === _lastCloudFingerprint && cloudFp === stateFingerprint(state)){
+        // Nothing changed — skip the re-render entirely so scroll position
+        // and any in-progress interactions stay put.
+        return;
       }
+      _lastCloudFingerprint = cloudFp;
+      mergeCloudState(cloud);
+      render();
     }catch(e){ /* ignore — try again next tick */ }
     finally{ _draftPollBusy = false; }
   }, 4000);
@@ -1386,6 +1415,7 @@ function load(){
 function save(){
   localStorage.setItem('cnf_v1',JSON.stringify(state));
   if(me) localStorage.setItem('cnf_user',JSON.stringify(me));
+  _lastLocalChange = Date.now();
   cloudSaveState();
 }
 
@@ -1755,6 +1785,16 @@ function doLogin(){ doSignIn(); }
 // ─── RENDER ────────────────────────────────────────────────────────────────
 
 function render(){
+  // Preserve scroll positions on any scrollable lists across the re-render.
+  // Without this, every render — including the 4-sec draft poll — bounces
+  // the player list back to the top, which is maddening mid-draft.
+  const scrollSnap = {};
+  ['player-list','pick-log','filter-bar'].forEach(cls => {
+    document.querySelectorAll('.' + cls).forEach((el, i) => {
+      scrollSnap[cls + '-' + i] = el.scrollTop;
+    });
+  });
+
   const app=document.getElementById('app');
   switch(view){
     case 'home':        app.innerHTML=renderHome(); break;
@@ -1801,6 +1841,17 @@ function render(){
   checkMyTurnNotify(_activeDraft);
   if(_activeDraft) startDraftPolling();
   else stopDraftPolling();
+
+  // Restore scroll positions saved at the top of render(). Wait one frame so
+  // the new DOM has laid out before we read/write scrollTop.
+  requestAnimationFrame(() => {
+    ['player-list','pick-log','filter-bar'].forEach(cls => {
+      document.querySelectorAll('.' + cls).forEach((el, i) => {
+        const saved = scrollSnap[cls + '-' + i];
+        if(saved !== undefined && saved > 0) el.scrollTop = saved;
+      });
+    });
+  });
 }
 
 // ─── HOME ──────────────────────────────────────────────────────────────────
