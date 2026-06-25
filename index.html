@@ -2829,25 +2829,170 @@ function renderAdminGroups(){
       <div>
         <h3 style="font-weight:800;margin-bottom:14px">Existing Groups (${groups.length})</h3>
         ${groups.length===0?`<p style="color:var(--muted)">No groups yet.</p>`:
-          groups.map(g=>`
+          groups.map(g=>{
+            const isOpen = window._expandedGroupId === g.id;
+            return `
             <div class="card" style="margin-bottom:10px">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px">
-                <div>
-                  <div style="font-weight:800">${g.name}</div>
-                  <div style="font-size:.75rem;color:var(--muted)">${g.managers.length} managers · Week ${g.week}</div>
+              <div onclick="window._expandedGroupId = ${isOpen ? 'null' : g.id}; render()" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none">
+                <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+                  <span style="font-size:.85rem;color:var(--muted);transition:transform .2s;display:inline-block;${isOpen?'transform:rotate(90deg)':''}">▶</span>
+                  <div style="min-width:0">
+                    <div style="font-weight:800">${g.name}</div>
+                    <div style="font-size:.75rem;color:var(--muted)">${g.managers.length} managers · Week ${g.week}</div>
+                  </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
                   <span class="badge ${g.draftDone?'b-green':'b-gold'}">${g.draftDone?'Draft Complete':'Pending Draft'}</span>
-                  <button onclick="deleteGroup(${g.id})" title="Delete this group" style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);color:var(--red);padding:4px 8px;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:700">🗑</button>
+                  <button onclick="event.stopPropagation();deleteGroup(${g.id})" title="Delete this group" style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);color:var(--red);padding:4px 8px;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:700">🗑</button>
                 </div>
               </div>
-              <div style="display:flex;flex-wrap:wrap;gap:6px">
-                ${g.managers.map(m=>`<span class="badge b-gray">${m}</span>`).join('')}
-              </div>
+              ${!isOpen ? `
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">
+                  ${g.managers.map(m=>`<span class="badge b-gray">${m}</span>`).join('')}
+                </div>
+              ` : renderAdminGroupDetail(g)}
             </div>
-          `).join('')}
+            `;
+          }).join('')}
       </div>
     </div>`;
+}
+
+// Comprehensive read-only group view for the admin panel — shows everything
+// the players in that group would see on their own dashboards.
+function renderAdminGroupDetail(g){
+  const standings = getGroupStandings(g.id);
+  const draft = state.draft[g.id];
+  const week = g.week;
+  const matchups = state.matchups[`g${g.id}_w${week}`] || [];
+  const recentTx = (state.transactions || []).filter(t => t.groupId === g.id).slice(0, 6);
+  const recentPicks = draft?.picks?.slice(-6).reverse() || [];
+
+  return `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:18px">
+
+      <!-- Standings -->
+      <div>
+        <div style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">📊 Standings</div>
+        <div style="background:var(--surf2);border-radius:8px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:24px 1fr 36px 36px 60px 60px;padding:6px 10px;font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border)">
+            <div>#</div><div>Manager</div><div style="text-align:center">W</div><div style="text-align:center">L</div><div style="text-align:right">PF</div><div style="text-align:right">PA</div>
+          </div>
+          ${standings.map((r,i)=>`
+            <div style="display:grid;grid-template-columns:24px 1fr 36px 36px 60px 60px;padding:6px 10px;border-bottom:1px solid rgba(26,51,80,.3);align-items:center;font-size:.78rem">
+              <div style="font-weight:700;color:${i===0?'var(--gold)':'var(--muted)'}">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</div>
+              <div style="display:flex;align-items:center;gap:6px">
+                ${avatarCircle(r.username,20)}
+                <span style="font-weight:700">${r.username}</span>
+              </div>
+              <div style="text-align:center;font-weight:700;color:var(--green)">${r.w}</div>
+              <div style="text-align:center;color:var(--red)">${r.l}</div>
+              <div style="text-align:right;color:var(--lblue);font-family:'Orbitron',monospace">${r.pf}</div>
+              <div style="text-align:right;color:var(--muted);font-family:'Orbitron',monospace">${r.pa}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Current week matchups -->
+      ${matchups.length ? `
+        <div>
+          <div style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🆚 Week ${week} Matchups</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">
+            ${matchups.map(m => `
+              <div style="background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                <div style="display:flex;align-items:center;justify-content:space-between;font-size:.85rem">
+                  <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+                    ${avatarCircle(m.m1,20)}
+                    <span style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${m.done&&m.s1>m.s2?'color:var(--green)':''}">${m.m1}</span>
+                  </div>
+                  <span style="font-family:'Orbitron',monospace;font-weight:800;color:${m.done&&m.s1>m.s2?'var(--green)':'var(--text)'};margin-left:8px">${m.s1||0}</span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;font-size:.85rem;margin-top:6px">
+                  <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+                    ${avatarCircle(m.m2,20)}
+                    <span style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${m.done&&m.s2>m.s1?'color:var(--green)':''}">${m.m2}</span>
+                  </div>
+                  <span style="font-family:'Orbitron',monospace;font-weight:800;color:${m.done&&m.s2>m.s1?'var(--green)':'var(--text)'};margin-left:8px">${m.s2||0}</span>
+                </div>
+                <div style="font-size:.65rem;color:var(--muted);text-align:right;margin-top:4px">${m.done?'Final':'In progress'}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Rosters -->
+      <div>
+        <div style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">👥 Rosters</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
+          ${g.managers.map(m => {
+            const roster = (state.rosters[m] || []).map(pid => PLAYER_MAP[pid]).filter(Boolean);
+            return `
+              <div style="background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)">
+                  ${avatarCircle(m,22)}
+                  <span style="font-weight:800;font-size:.85rem;flex:1">${m}</span>
+                  <span style="font-size:.7rem;color:var(--muted);font-weight:700">${roster.length}/7</span>
+                </div>
+                ${roster.length === 0 ? `
+                  <div style="font-size:.75rem;color:var(--muted);font-style:italic;text-align:center;padding:8px">No picks yet</div>
+                ` : roster.map(p => `
+                  <div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.78rem">
+                    <span style="width:18px;text-align:center;font-size:.65rem;font-weight:800;color:${p.color}">#${p.num}</span>
+                    <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</span>
+                    <span style="font-size:.7rem;color:${p.color}">${p.team}</span>
+                  </div>
+                `).join('')}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Recent picks (during draft) -->
+      ${recentPicks.length ? `
+        <div>
+          <div style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🏀 Latest Picks</div>
+          <div style="background:var(--surf2);border-radius:8px;padding:8px 10px">
+            ${recentPicks.map(pk => {
+              const p = PLAYER_MAP[pk.playerId];
+              return `
+                <div style="display:flex;align-items:center;gap:8px;font-size:.78rem;padding:4px 0;border-bottom:1px solid rgba(26,51,80,.3)">
+                  <span style="font-size:.65rem;color:var(--muted);font-weight:800;width:40px">R${pk.round}·${pk.pick}</span>
+                  <span style="font-weight:700;flex:1">${pk.manager}</span>
+                  <span style="color:${p?.color || 'var(--muted)'}">${p?.name || '?'}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Recent transactions (post-draft) -->
+      ${recentTx.length ? `
+        <div>
+          <div style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🔄 Recent Transactions</div>
+          <div style="background:var(--surf2);border-radius:8px;padding:8px 10px">
+            ${recentTx.map(t => {
+              const added = PLAYER_MAP[t.added];
+              const dropped = PLAYER_MAP[t.dropped];
+              const date = new Date(t.ts).toLocaleDateString();
+              return `
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 60px;gap:6px;font-size:.75rem;padding:4px 0;border-bottom:1px solid rgba(26,51,80,.3);align-items:center">
+                  <span style="font-weight:700">${t.username}</span>
+                  <span style="color:var(--green)">+ ${added?.name || '?'}</span>
+                  <span style="color:var(--red)">− ${dropped?.name || '?'}</span>
+                  <span style="color:var(--muted);font-size:.7rem;text-align:right">${date}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+    </div>
+  `;
 }
 
 function renderAdminDraft(){
