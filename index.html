@@ -2674,13 +2674,14 @@ function renderAdmin(){
     <h1 class="page-title">⚙️ Commissioner Panel</h1>
     <p class="page-sub">Manage groups, run drafts, sync live stats from RecLeague.net</p>
     <div class="tabs">
-      ${[['sync','🔄 Live Sync'],['groups','Groups'],['draft','Live Draft'],['week','Week Control'],['brackets','Bracket'],['champdraft','🏆 Champ Draft']].map(([k,l])=>
+      ${[['sync','🔄 Live Sync'],['groups','Groups'],['draft','Live Draft'],['stats','📋 Stats'],['week','Week Control'],['brackets','Bracket'],['champdraft','🏆 Champ Draft']].map(([k,l])=>
         `<button class="tab ${t===k?'active':''}" onclick="window._adminTab='${k}';render()">${l}</button>`
       ).join('')}
     </div>
     ${t==='sync'?renderAdminSync():''}
     ${t==='groups'?renderAdminGroups():''}
     ${t==='draft'?renderAdminDraft():''}
+    ${t==='stats'?renderAdminStats():''}
     ${t==='week'?renderAdminWeek():''}
     ${t==='brackets'?renderAdminBrackets():''}
     ${t==='champdraft'?renderAdminChampDraft():''}`;
@@ -3232,6 +3233,161 @@ function renderAdminDraft(){
         }).join('')}
       </div>
     </div>`;
+}
+
+// Manual stat entry — admin types in each player's weekly stats by hand.
+// Used when the RecLeague auto-sync isn't available or isn't trusted.
+function renderAdminStats(){
+  const week = window._statsWeek || 1;
+  const filter = (window._statsFilter || '').toLowerCase();
+  const showOnlyDrafted = window._statsOnlyDrafted !== false; // default true
+
+  // Set of every drafted player ID across every group's roster
+  const draftedIds = new Set();
+  Object.values(state.rosters || {}).forEach(arr => (arr || []).forEach(id => draftedIds.add(id)));
+  const draftedCount = draftedIds.size;
+
+  const candidates = ALL_PLAYERS.filter(p => {
+    if(showOnlyDrafted && !draftedIds.has(p.id)) return false;
+    if(filter && !p.name.toLowerCase().includes(filter) && !p.team.toLowerCase().includes(filter)) return false;
+    return true;
+  });
+
+  // How many rows actually have at least one stat for this week
+  let filledCount = 0;
+  candidates.forEach(p => {
+    if(state.weeklyStats?.[`w${week}_${p.id}`]) filledCount++;
+  });
+
+  const grid = '1fr 50px 50px 50px 50px 50px 50px 50px 60px';
+
+  return `
+    <div style="max-width:1000px">
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="font-weight:800;margin-bottom:6px">📋 Manual Stat Entry</h3>
+        <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+          Type each player's stats for the week. Fantasy points (FP) update instantly. Matchup scores and standings rebuild automatically.
+          ${filledCount > 0 ? `<span style="color:var(--green)"> ${filledCount}/${candidates.length} rows have stats this week.</span>` : ''}
+        </p>
+
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Week</span>
+            <select onchange="window._statsWeek=parseInt(this.value);render()" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
+              ${[1,2,3,4,5,6,7].map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+            </select>
+          </label>
+          <input placeholder="Search player or team…" value="${filter}" oninput="window._statsFilter=this.value;render()"
+            style="flex:1;min-width:200px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer;color:var(--text)">
+            <input type="checkbox" ${showOnlyDrafted?'checked':''} onchange="window._statsOnlyDrafted=this.checked;render()" style="width:16px;height:16px;accent-color:var(--blue)">
+            Drafted only (${draftedCount})
+          </label>
+          <button class="btn btn-outline btn-sm" onclick="clearWeekStats(${week})" style="color:var(--red);border-color:rgba(255,80,80,.3)" title="Clear every stat entry for this week">
+            🗑 Clear Week
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="display:grid;grid-template-columns:${grid};gap:4px;padding:10px 14px;font-weight:700;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surf2);position:sticky;top:0;z-index:5">
+          <div>Player</div>
+          <div style="text-align:center">PTS</div>
+          <div style="text-align:center">REB</div>
+          <div style="text-align:center">AST</div>
+          <div style="text-align:center">STL</div>
+          <div style="text-align:center">BLK</div>
+          <div style="text-align:center;color:var(--red)">FOUL</div>
+          <div style="text-align:center;color:var(--red)">TO</div>
+          <div style="text-align:right">FP</div>
+        </div>
+        ${candidates.length === 0 ? `
+          <div style="text-align:center;padding:32px;color:var(--muted)">
+            ${showOnlyDrafted ? 'No drafted players match. Uncheck "Drafted only" to enter stats for anyone.' : 'No players match your search.'}
+          </div>
+        ` : candidates.map(p => {
+          const s = state.weeklyStats?.[`w${week}_${p.id}`] || {};
+          const fp = fantasyPts(s);
+          const fpCellId = `fp_w${week}_${p.id}`;
+          return `
+            <div style="display:grid;grid-template-columns:${grid};gap:4px;padding:6px 14px;align-items:center;border-bottom:1px solid rgba(26,51,80,.3)">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                <div style="width:26px;height:26px;border-radius:50%;background:${p.color}33;display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:800;color:${p.color};flex-shrink:0">#${p.num}</div>
+                <div style="min-width:0">
+                  <div style="font-weight:700;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
+                  <div style="font-size:.65rem;color:${p.color}">${p.team}${p.pos?' · '+p.pos:''}</div>
+                </div>
+              </div>
+              ${['pts','reb','ast','stl','blk','foul','to'].map(k => `
+                <input type="number" min="0" inputmode="numeric" value="${s[k] || ''}" placeholder="0"
+                  onchange="updatePlayerStat(${week}, ${p.id}, '${k}', this.value, '${fpCellId}')"
+                  style="width:100%;text-align:center;padding:5px 4px;border:1px solid var(--border);border-radius:5px;background:var(--surf2);color:var(--text);font-size:.85rem;font-family:'Orbitron',monospace">
+              `).join('')}
+              <div id="${fpCellId}" style="text-align:right;font-weight:800;font-family:'Orbitron',monospace;font-size:.95rem;color:${fp>0?'var(--lblue)':fp<0?'var(--red)':'var(--muted)'}">${fp.toFixed(1)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div style="margin-top:14px;padding:10px 14px;background:var(--surf);border:1px solid var(--border);border-radius:10px;font-size:.75rem;color:var(--muted);line-height:1.55">
+        Scoring: PTS×1.0 + REB×1.2 + AST×1.5 + STL×2.0 + BLK×2.0 − FOUL×1.0 − TO×2.0.
+        Only each manager's top 5 players (by FP that week) count toward their team total.
+        Press Tab between fields to move quickly; values save automatically when you leave a field.
+      </div>
+    </div>
+  `;
+}
+
+// Save a single stat cell. Updates state, recomputes matchups for the week,
+// updates the inline FP display, and persists. No full re-render so the user
+// can keep typing across fields without losing focus.
+function updatePlayerStat(week, playerId, statKey, rawValue, fpCellId){
+  if(!state.weeklyStats) state.weeklyStats = {};
+  const key = `w${week}_${playerId}`;
+  if(!state.weeklyStats[key]) state.weeklyStats[key] = {};
+  const n = Math.max(0, parseFloat(rawValue) || 0);
+  state.weeklyStats[key][statKey] = n;
+
+  // Update the FP cell in place.
+  const fp = fantasyPts(state.weeklyStats[key]);
+  const fpEl = document.getElementById(fpCellId);
+  if(fpEl){
+    fpEl.textContent = fp.toFixed(1);
+    fpEl.style.color = fp > 0 ? 'var(--lblue)' : fp < 0 ? 'var(--red)' : 'var(--muted)';
+  }
+
+  // Rebuild matchup totals for any group that's currently on this week.
+  recalcMatchupsForWeek(week);
+  save();
+}
+
+// Recompute s1/s2 on every matchup for `week` for every drafted group.
+// Picks up the new stat right away in matchups/standings/home pages.
+function recalcMatchupsForWeek(week){
+  Object.values(state.groups || {}).forEach(g => {
+    if(!g.draftDone) return;
+    const matchupsKey = `g${g.id}_w${week}`;
+    const ms = state.matchups?.[matchupsKey];
+    if(!ms) return;
+    ms.forEach(m => {
+      m.s1 = calcWeekScore(m.m1, week);
+      m.s2 = calcWeekScore(m.m2, week);
+      // Mark done if the week being edited is fully past for that group.
+      m.done = week < g.week;
+    });
+  });
+}
+
+function clearWeekStats(week){
+  if(!confirm(`Clear ALL stat entries for Week ${week}? Cannot be undone.`)) return;
+  if(!state.weeklyStats) return;
+  const prefix = `w${week}_`;
+  Object.keys(state.weeklyStats).forEach(k => {
+    if(k.startsWith(prefix)) delete state.weeklyStats[k];
+  });
+  recalcMatchupsForWeek(week);
+  save();
+  render();
 }
 
 function renderAdminWeek(){
