@@ -1039,14 +1039,18 @@ async function takeStatSnapshot(weekNum){
   return {ok:true, playerCount:Object.keys(totals).length};
 }
 
-// Get a player's stats for a specific week (snapshot delta)
+// Get a player's stats for a specific week. The base value is the delta
+// between this week's snapshot and last week's (the RecLeague auto-pull
+// path). Any manual override the admin typed into the Stats tab for the
+// same week takes precedence per-field, so the admin always has the last
+// word — auto-pull never erases manual corrections.
 function getPlayerWeekStats(playerId, weekNum){
   const snaps=state.statSnapshots||{};
   const curr=snaps[weekNum]||{};
   const prev=snaps[weekNum-1]||{};
-  const c=curr[playerId]||{pts:0,reb:0,ast:0,stl:0,blk:0};
-  const p=prev[playerId]||{pts:0,reb:0,ast:0,stl:0,blk:0};
-  return {
+  const c=curr[playerId]||{};
+  const p=prev[playerId]||{};
+  const out = {
     pts:Math.max(0,(c.pts||0)-(p.pts||0)),
     reb:Math.max(0,(c.reb||0)-(p.reb||0)),
     ast:Math.max(0,(c.ast||0)-(p.ast||0)),
@@ -1055,6 +1059,15 @@ function getPlayerWeekStats(playerId, weekNum){
     foul:Math.max(0,(c.foul||0)-(p.foul||0)),
     to:Math.max(0,(c.to||0)-(p.to||0)),
   };
+  // Manual overrides win, per field. If admin only typed PTS, the rest stays
+  // from snapshot delta. If they zeroed REB, that zero wins over snap.
+  const manual = state.weeklyStats?.[`w${weekNum}_${playerId}`];
+  if(manual){
+    for(const k of Object.keys(manual)){
+      if(manual[k] !== undefined && manual[k] !== null && manual[k] !== '') out[k] = manual[k];
+    }
+  }
+  return out;
 }
 
 // Rebuild index immediately from hardcoded S10 data
@@ -1462,12 +1475,8 @@ function calcWeekScore(username, week, useChampRoster=false){
   const roster = (useChampRoster && state.champRosters?.[username]?.length)
     ? state.champRosters[username]
     : (state.rosters[username]||[]);
-  const snaps = state.statSnapshots||{};
-  const useSnap = snaps[week]||snaps[week-1];
-  const fpList = roster.map(pid => {
-    const s = useSnap ? getPlayerWeekStats(pid, week) : state.weeklyStats?.[`w${week}_${pid}`];
-    return fantasyPts(s);
-  });
+  // getPlayerWeekStats handles snap delta + manual override automatically.
+  const fpList = roster.map(pid => fantasyPts(getPlayerWeekStats(pid, week)));
   // Only the top 5 performers count toward the weekly team total.
   const top5 = fpList.sort((a,b) => b - a).slice(0, 5).reduce((s,x) => s + x, 0);
   return parseFloat(top5.toFixed(1));
@@ -1960,7 +1969,7 @@ function renderHome(){
             <div class="roster-grid">
               ${roster.slice(0,4).map(pid=>{
                 const p=PLAYER_MAP[pid]; if(!p) return '';
-                const stats=state.weeklyStats?.[`w${week}_${pid}`];
+                const stats=getPlayerWeekStats(pid, week);
                 const fp=fantasyPts(stats);
                 return `<div class="roster-card">
                   <div class="roster-card-name">${p.name.split(' ').pop()}</div>
@@ -2017,12 +2026,11 @@ function renderMyTeam(){
     </div>`;
 
   // Compute fp per player, sort desc, take the top 5 — only they count.
-  const snaps = state.statSnapshots||{};
-  const useSnap = snaps[week]||snaps[week-1];
+  // getPlayerWeekStats merges snap delta + manual overrides so both paths work.
   const rows = roster.map(pid => {
     const p = PLAYER_MAP[pid];
     if(!p) return null;
-    const s = useSnap ? getPlayerWeekStats(pid, week) : (state.weeklyStats?.[`w${week}_${pid}`] || {});
+    const s = getPlayerWeekStats(pid, week);
     return { pid, p, s: s || {}, fp: fantasyPts(s) };
   }).filter(Boolean).sort((a,b) => b.fp - a.fp);
 
@@ -3306,8 +3314,12 @@ function renderAdminStats(){
             ${showOnlyDrafted ? 'No drafted players match. Uncheck "Drafted only" to enter stats for anyone.' : 'No players match your search.'}
           </div>
         ` : candidates.map(p => {
+          // Input fields show what the admin has manually typed (blank if none).
+          // FP cell shows the *merged* value so the admin sees the real total
+          // including any auto-pulled snapshot delta.
           const s = state.weeklyStats?.[`w${week}_${p.id}`] || {};
-          const fp = fantasyPts(s);
+          const merged = getPlayerWeekStats(p.id, week);
+          const fp = fantasyPts(merged);
           const fpCellId = `fp_w${week}_${p.id}`;
           return `
             <div style="display:grid;grid-template-columns:${grid};gap:4px;padding:6px 14px;align-items:center;border-bottom:1px solid rgba(26,51,80,.3)">
@@ -3348,8 +3360,9 @@ function updatePlayerStat(week, playerId, statKey, rawValue, fpCellId){
   const n = Math.max(0, parseFloat(rawValue) || 0);
   state.weeklyStats[key][statKey] = n;
 
-  // Update the FP cell in place.
-  const fp = fantasyPts(state.weeklyStats[key]);
+  // Update the FP cell in place. Use merged stats (snap delta + manual override)
+  // so the displayed FP matches what players actually see on My Team.
+  const fp = fantasyPts(getPlayerWeekStats(playerId, week));
   const fpEl = document.getElementById(fpCellId);
   if(fpEl){
     fpEl.textContent = fp.toFixed(1);
