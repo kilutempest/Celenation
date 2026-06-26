@@ -3393,19 +3393,45 @@ function clearWeekStats(week){
 function renderAdminWeek(){
   const groups=Object.values(state.groups).filter(g=>g.draftDone);
   return `
-    <div style="max-width:500px;display:flex;flex-direction:column;gap:14px">
-      ${groups.map(g=>`
+    <div style="max-width:560px;display:flex;flex-direction:column;gap:14px">
+      <div class="card" style="background:rgba(77,158,255,.06);border-color:rgba(77,158,255,.25)">
+        <h3 style="font-weight:800;margin-bottom:6px">📅 Week-End Workflow</h3>
+        <ol style="font-size:.82rem;color:var(--muted);line-height:1.6;padding-left:18px;margin:0">
+          <li>Sunday games play out. RecLeague manager enters totals on recleague.net.</li>
+          <li>Open this tab and click <strong style="color:var(--text)">Advance to Week N+1 →</strong>.</li>
+          <li>App fetches RecLeague stats, computes each player's delta vs last week, locks in matchup winners, week clock ticks forward.</li>
+          <li>If a number is off, jump to the <strong style="color:var(--text)">📋 Stats</strong> tab and type the correction — matchups recompute instantly.</li>
+        </ol>
+      </div>
+
+      ${groups.map(g=>{
+        const closedWeek = g.week - 1; // most recently closed
+        const canUndo = g.week > 1;
+        const lastSnapTime = state.statSnapshots?.[closedWeek] ? 'Loaded' : 'Empty';
+        return `
         <div class="card">
           <h3 style="font-weight:800;margin-bottom:4px">${g.name}</h3>
-          <p style="color:var(--muted);font-size:.8rem;margin-bottom:14px">Currently Week ${g.week} of 7</p>
-          <div style="display:flex;gap:10px;align-items:center">
+          <p style="color:var(--muted);font-size:.8rem;margin-bottom:14px">
+            Currently Week ${g.week} of 7
+            ${canUndo ? ` · Last closed: Week ${closedWeek} (snapshot ${lastSnapTime.toLowerCase()})` : ''}
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <button id="advBtn_${g.id}" class="btn btn-blue btn-sm" onclick="advanceWeek(${g.id})" ${g.week>=7?'disabled':''}>
-              Advance to Week ${g.week+1} →
+              ${g.week >= 7 ? 'Group Stage Complete' : `Advance to Week ${g.week+1} →`}
             </button>
+            ${canUndo ? `
+              <button id="refBtn_${g.id}" class="btn btn-outline btn-sm" onclick="refreshLastWeek(${g.id})" title="Re-pull stats from RecLeague for the most recently closed week. Use this if RecLeague added stats after you advanced.">
+                🔄 Re-pull Week ${closedWeek}
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="undoLastWeekAdvance(${g.id})" style="color:var(--red);border-color:rgba(255,80,80,.3)" title="Roll back to the previous week so you can redo it">
+                ↶ Undo Week ${closedWeek}
+              </button>
+            ` : ''}
             ${g.week>=7?`<span class="badge b-green">Group Stage Complete</span>`:''}
           </div>
+          <div id="wkMsg_${g.id}" style="margin-top:10px;font-size:.82rem"></div>
         </div>
-      `).join('')}
+      `;}).join('')}
       ${groups.length===0?`<p style="color:var(--muted)">No groups with completed drafts yet.</p>`:''}
     </div>`;
 }
@@ -3849,7 +3875,9 @@ async function advanceWeek(groupId){
 
   // Show loading state on the button
   const btn=document.getElementById(`advBtn_${groupId}`);
+  const msg=document.getElementById(`wkMsg_${groupId}`);
   if(btn){ btn.disabled=true; btn.textContent='Fetching stats…'; }
+  if(msg){ msg.style.color='var(--muted)'; msg.textContent='Pulling stats from RecLeague…'; }
 
   // Auto-fetch latest stats from recleague before closing the week
   const totals=await fetchAllPlayerStatsDirect();
@@ -3865,8 +3893,75 @@ async function advanceWeek(groupId){
     m.s2=calcWeekScore(m.m2,g.week);
     m.done=true;
   });
+  const closedWeek = g.week;
   g.week++;
-  save(); render();
+  save();
+  if(msg){ msg.style.color='var(--green)'; msg.textContent=`✅ Week ${closedWeek} closed (${Object.keys(totals||{}).length} player rows). Now on Week ${g.week}.`; }
+  render();
+}
+
+// Re-pull the most recently closed week's stats from RecLeague WITHOUT
+// advancing further. Useful when RecLeague was updated after you advanced.
+async function refreshLastWeek(groupId){
+  const g = state.groups[groupId];
+  if(!g || g.week <= 1) return;
+  const closedWeek = g.week - 1;
+  const btn = document.getElementById(`refBtn_${groupId}`);
+  const msg = document.getElementById(`wkMsg_${groupId}`);
+  if(btn){ btn.disabled = true; btn.textContent = 'Re-pulling…'; }
+  if(msg){ msg.style.color = 'var(--muted)'; msg.textContent = `Re-pulling Week ${closedWeek} stats from RecLeague…`; }
+
+  const totals = await fetchAllPlayerStatsDirect();
+  if(btn){ btn.disabled = false; btn.textContent = `🔄 Re-pull Week ${closedWeek}`; }
+
+  if(!totals || Object.keys(totals).length === 0){
+    if(msg){ msg.style.color = 'var(--red)'; msg.textContent = '❌ Could not pull stats from RecLeague.'; }
+    return;
+  }
+
+  if(!state.statSnapshots) state.statSnapshots = {};
+  state.statSnapshots[closedWeek] = totals;
+  // Recompute matchup totals for the closed week
+  const key = `g${groupId}_w${closedWeek}`;
+  if(state.matchups[key]){
+    state.matchups[key].forEach(m => {
+      m.s1 = calcWeekScore(m.m1, closedWeek);
+      m.s2 = calcWeekScore(m.m2, closedWeek);
+      m.done = true;
+    });
+  }
+  save();
+  if(msg){ msg.style.color = 'var(--green)'; msg.textContent = `✅ Week ${closedWeek} refreshed (${Object.keys(totals).length} player rows). Matchup scores updated.`; }
+  render();
+}
+
+// Roll back the most recent week advance. Reopens that week's matchups so
+// the commissioner can edit stats / re-pull / re-advance.
+function undoLastWeekAdvance(groupId){
+  const g = state.groups[groupId];
+  if(!g || g.week <= 1) return;
+  const targetWeek = g.week - 1;
+  if(!confirm(`Roll ${g.name} back from Week ${g.week} to Week ${targetWeek}? Week ${targetWeek} matchups will reopen so you can redo them.`)) return;
+
+  g.week = targetWeek;
+  // Drop the snapshot for the week we're reopening so calcWeekScore falls
+  // back to weeklyStats (manual entry) until the admin re-advances.
+  if(state.statSnapshots && state.statSnapshots[targetWeek]){
+    delete state.statSnapshots[targetWeek];
+  }
+  // Un-finalize the matchups but keep their scores zeroed pending re-close.
+  const key = `g${groupId}_w${targetWeek}`;
+  if(state.matchups[key]){
+    state.matchups[key].forEach(m => {
+      m.done = false;
+      m.s1 = calcWeekScore(m.m1, targetWeek);
+      m.s2 = calcWeekScore(m.m2, targetWeek);
+    });
+  }
+  const msg = document.getElementById(`wkMsg_${groupId}`);
+  if(msg){ msg.style.color = 'var(--gold)'; msg.textContent = `↶ Rolled back to Week ${targetWeek}. Edit stats or click Advance to re-close.`; }
+  save();
+  render();
 }
 
 // Live refresh — any user can call this to pull latest stats right now
