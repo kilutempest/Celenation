@@ -732,6 +732,7 @@ select.fi option{background:var(--surf2)}
   <div id="navUser" style="display:none;align-items:center;gap:8px">
       <div id="navAvatar" style="width:32px;height:32px;border-radius:50%;background:var(--surf2);border:2px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:800;color:var(--lblue);flex-shrink:0"></div>
       <span id="navUsername" style="font-size:.8rem;font-weight:700;color:var(--muted);display:none" class="desktop-only"></span>
+      <button id="navRefresh" onclick="manualRefresh()" style="font-size:.85rem;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:5px;transition:opacity .2s" title="Pull latest league data — use if your dashboard looks out of date">🔄</button>
       <button onclick="openChangePassword()" style="font-size:.85rem;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:5px" title="Change password">🔑</button>
       <button onclick="doSignOut()" style="font-size:.72rem;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:5px" title="Sign out">✕</button>
     </div>
@@ -771,6 +772,7 @@ select.fi option{background:var(--surf2)}
   <button onclick="nav('freeagency');closeMobileDrawer()"><span>🔄</span>Free Agency</button>
   <button onclick="nav('bracket');closeMobileDrawer()"><span>🏆</span>Bracket</button>
   <button id="md_admin" style="display:none" onclick="nav('admin');closeMobileDrawer()"><span>⚙️</span>Admin</button>
+  <button onclick="closeMobileDrawer();manualRefresh()"><span>🔄</span>Refresh My Data</button>
   <button onclick="closeMobileDrawer();openChangePassword()"><span>🔑</span>Change Password</button>
   <button onclick="doSignOut();closeMobileDrawer()" style="color:var(--red)"><span>🚪</span>Sign Out</button>
 </div>
@@ -1387,6 +1389,62 @@ function stopDraftPolling(){
   if(_draftPollTimer){ clearInterval(_draftPollTimer); _draftPollTimer = null; }
 }
 
+// Slow background poll (20s) that runs whenever a user is signed in,
+// regardless of whether a draft is active. Catches drift — e.g. a user
+// loaded before admin created their group, their browser stayed on the
+// stale state, never seeing the assignment until a manual refresh.
+let _slowPollTimer = null;
+function startSlowPolling(){
+  if(_slowPollTimer) return;
+  _slowPollTimer = setInterval(async ()=>{
+    // The fast draft poller is running — let it handle things.
+    if(_draftPollTimer) return;
+    if(Date.now() - _lastLocalChange < 2500) return;
+    try{
+      const cloud = await cloudFetchState();
+      if(!cloud) return;
+      const cloudFp = stateFingerprint(cloud);
+      if(cloudFp === stateFingerprint(state)) return;
+      mergeCloudState(cloud);
+      render();
+    }catch(e){ /* try again next tick */ }
+  }, 20000);
+}
+function stopSlowPolling(){
+  if(_slowPollTimer){ clearInterval(_slowPollTimer); _slowPollTimer = null; }
+}
+
+// User-facing "I think my data is wrong" button. Hard-pulls cloud state and
+// re-renders immediately.
+async function manualRefresh(){
+  const btn = document.getElementById('navRefresh');
+  if(btn){ btn.disabled = true; btn.style.opacity = '0.5'; }
+  try{
+    const cloud = await cloudFetchState();
+    if(cloud){
+      mergeCloudState(cloud);
+      // Also re-pull our own account in case is_admin / group_id changed.
+      if(me){
+        const acct = await cloudFetchAccountPublic(me.username);
+        if(acct){
+          const existing = state.users[me.username] || {};
+          state.users[me.username] = {
+            isAdmin: !!acct.is_admin,
+            groupId: existing.groupId ?? acct.group_id ?? null,
+            avatar: acct.avatar_data || existing.avatar || null,
+          };
+        }
+      }
+    }
+    ensureGroupConsistency();
+    render();
+  }catch(e){
+    console.warn('Manual refresh failed:', e);
+  }finally{
+    if(btn){ btn.disabled = false; btn.style.opacity = '1'; }
+  }
+}
+
 // First user gesture unlocks the audio context (browser autoplay policy).
 document.addEventListener('click', ()=>{ ensureAudio(); }, { once: true });
 
@@ -1425,7 +1483,24 @@ function load(){
   try{ const s=localStorage.getItem('cnf_v1'); if(s) state=JSON.parse(s); }catch(e){}
   try{ const u=localStorage.getItem('cnf_user'); if(u) me=JSON.parse(u); }catch(e){}
 }
+// Reconcile state.users[m].groupId with the actual group memberships in
+// state.groups. Heals any drift caused by stale writes from clients that
+// loaded an outdated cnf_state from cloud and saved over it.
+function ensureGroupConsistency(){
+  if(!state.users) state.users = {};
+  Object.values(state.groups || {}).forEach(g => {
+    (g.managers || []).forEach(m => {
+      if(!state.users[m]){
+        state.users[m] = {isAdmin: false, groupId: g.id, avatar: null};
+      } else if(state.users[m].groupId !== g.id){
+        state.users[m].groupId = g.id;
+      }
+    });
+  });
+}
+
 function save(){
+  ensureGroupConsistency();
   localStorage.setItem('cnf_v1',JSON.stringify(state));
   if(me) localStorage.setItem('cnf_user',JSON.stringify(me));
   _lastLocalChange = Date.now();
@@ -1850,6 +1925,12 @@ function render(){
   checkMyTurnNotify(_activeDraft);
   if(_activeDraft) startDraftPolling();
   else stopDraftPolling();
+
+  // Always-on slow poll when signed in — catches stale state for users
+  // whose browser missed an update (e.g. they loaded before admin created
+  // their group).
+  if(me) startSlowPolling();
+  else stopSlowPolling();
 
   // Restore scroll positions saved at the top of render(). Wait one frame so
   // the new DOM has laid out before we read/write scrollTop.
