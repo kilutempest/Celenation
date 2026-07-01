@@ -721,6 +721,7 @@ select.fi option{background:var(--surf2)}
     <button class="nav-link" onclick="nav('myteam');closeMenu()">My Team</button>
     <button class="nav-link" onclick="nav('matchups');closeMenu()">Matchups</button>
     <button class="nav-link" onclick="nav('standings');closeMenu()">Standings</button>
+    <button class="nav-link" onclick="nav('stats');closeMenu()">📊 Stats</button>
     <button class="nav-link" id="draftNavBtn" style="display:none" onclick="nav('draft');closeMenu()">🏀 Draft</button>
     <button class="nav-link" onclick="nav('freeagency');closeMenu()">Free Agency</button>
     <button class="nav-link" onclick="nav('groups');closeMenu()">Groups</button>
@@ -1596,7 +1597,7 @@ let view='home';
 function nav(v){ view=v; render(); window.scrollTo(0,0); refreshNavLinks(); refreshMobileNav(); }
 function refreshNavLinks(){
   document.querySelectorAll('.nav-link').forEach(b=>b.classList.remove('active'));
-  const map={home:0,myteam:1,matchups:2,standings:3,draft:4,freeagency:5,groups:6,bracket:7,admin:8};
+  const map={home:0,myteam:1,matchups:2,standings:3,stats:4,draft:5,freeagency:6,groups:7,bracket:8,admin:9};
   const btns=document.querySelectorAll('.nav-link');
   if(map[view]!==undefined && btns[map[view]]) btns[map[view]].classList.add('active');
 }
@@ -1897,6 +1898,7 @@ function render(){
       break;
     case 'matchups':    app.innerHTML=renderMatchups(); break;
     case 'standings':   app.innerHTML=renderStandings(); break;
+    case 'stats':       app.innerHTML=renderStatsView(); break;
     case 'draft':       app.innerHTML=renderPlayerDraft(); break;
     case 'freeagency':  app.innerHTML=renderFreeAgency(); break;
     case 'groups':      app.innerHTML=renderGroups(); break;
@@ -2424,9 +2426,49 @@ function getFreeAgents(groupId){
   return ALL_PLAYERS.filter(p=>!drafted.has(p.id));
 }
 
+// Lineup lock — admins can freeze add/drops during a weekly window.
+// Default: Sunday 10:00 → Wednesday 22:00 (browser-local time).
+const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const DEFAULT_LINEUP_LOCK = {
+  enabled: true,
+  startDay: 0,  // Sunday
+  startHour: 10,
+  endDay: 3,    // Wednesday
+  endHour: 22,
+};
+
+function getLineupLock(){
+  return { ...DEFAULT_LINEUP_LOCK, ...(state.lineupLock || {}) };
+}
+
+function isLineupLocked(){
+  const lock = getLineupLock();
+  if(!lock.enabled) return false;
+  const now = new Date();
+  const nowMin  = now.getDay() * 1440 + now.getHours() * 60 + now.getMinutes();
+  const startMin = lock.startDay * 1440 + lock.startHour * 60;
+  const endMin   = lock.endDay   * 1440 + lock.endHour   * 60;
+  if(startMin < endMin){
+    return nowMin >= startMin && nowMin < endMin;
+  }
+  // Window wraps across the week boundary
+  return nowMin >= startMin || nowMin < endMin;
+}
+
+function formatLockWindow(){
+  const l = getLineupLock();
+  const pad = h => String(h).padStart(2,'0');
+  return `${DAY_NAMES[l.startDay]} ${pad(l.startHour)}:00 → ${DAY_NAMES[l.endDay]} ${pad(l.endHour)}:00`;
+}
+
 function doAddDrop(addId, dropId){
   const u=myData();
   if(!u?.groupId) return;
+  // Admins can always override — lock is for players.
+  if(!isAdmin() && isLineupLocked()){
+    alert('🔒 Lineups are locked (' + formatLockWindow() + '). Try again later.');
+    return;
+  }
   const roster=state.rosters[me.username]||[];
   if(!roster.includes(dropId)){ alert('You don\'t have that player.'); return; }
   if(roster.includes(addId)){ alert('That player is already on your roster.'); return; }
@@ -2437,6 +2479,117 @@ function doAddDrop(addId, dropId){
   save();
   window._dropPending=null;
   render();
+}
+
+// Read-only stats view for players — see week-by-week fantasy production
+// for every drafted player. Cannot edit; only admins can via the Admin
+// Stats tab.
+function renderStatsView(){
+  const g = myGroup();
+  const currentWeek = g?.week || 1;
+  const week = window._statsViewWeek || Math.min(currentWeek, 7);
+  const scope = window._statsViewScope || 'all';   // 'all' | 'mine' | 'group'
+  const filter = (window._statsViewFilter || '').toLowerCase();
+
+  // Build the set of player IDs to consider based on scope
+  let pidSet;
+  if(scope === 'mine' && me){
+    pidSet = new Set(state.rosters[me.username] || []);
+  } else if(scope === 'group' && g){
+    pidSet = new Set(g.managers.flatMap(m => state.rosters[m] || []));
+  } else {
+    pidSet = new Set();
+    Object.values(state.rosters || {}).forEach(arr => (arr || []).forEach(id => pidSet.add(id)));
+  }
+
+  // Map pid → the manager who owns them (for the "Owner" column)
+  const ownerByPid = {};
+  Object.entries(state.rosters || {}).forEach(([mgr, arr]) => {
+    (arr || []).forEach(id => { ownerByPid[id] = mgr; });
+  });
+
+  // Build the rows: {p, s, fp, owner}
+  const rows = [];
+  pidSet.forEach(pid => {
+    const p = PLAYER_MAP[pid];
+    if(!p) return;
+    if(filter && !p.name.toLowerCase().includes(filter) && !p.team.toLowerCase().includes(filter)) return;
+    const s = getPlayerWeekStats(pid, week);
+    const fp = fantasyPts(s);
+    rows.push({ p, s, fp, owner: ownerByPid[pid] || '—' });
+  });
+  rows.sort((a,b) => b.fp - a.fp);
+
+  const grid = '30px 1fr 90px 40px 40px 40px 40px 40px 42px 40px 60px';
+  const weekOptions = Array.from({length: Math.min(currentWeek, 7)}, (_, i) => i + 1);
+
+  return `
+    <h1 class="page-title">📊 Weekly Stats</h1>
+    <p class="page-sub">See how every drafted player performed each week. View-only.</p>
+
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Week</span>
+          <select onchange="window._statsViewWeek=parseInt(this.value);render()" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
+            ${weekOptions.map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+          </select>
+        </label>
+        <div style="display:flex;background:var(--surf2);border-radius:8px;padding:3px">
+          ${[['all','All Players'],['group', g ? 'My Group' : ''],['mine','My Roster']].filter(([k,l])=>l).map(([k,l])=>
+            `<button onclick="window._statsViewScope='${k}';render()" style="background:${scope===k?'var(--blue)':'none'};color:${scope===k?'#fff':'var(--muted)'};border:none;padding:6px 12px;border-radius:6px;font-size:.78rem;font-weight:700;cursor:pointer">${l}</button>`
+          ).join('')}
+        </div>
+        <input placeholder="Search player or team…" value="${filter}" oninput="window._statsViewFilter=this.value;render()"
+          style="flex:1;min-width:180px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+      </div>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="display:grid;grid-template-columns:${grid};gap:4px;padding:8px 12px;background:var(--surf2);border-bottom:1px solid var(--border);font-size:.62rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">
+        <div style="text-align:center">#</div>
+        <div>Player</div>
+        <div>Owner</div>
+        <div style="text-align:center">PTS</div>
+        <div style="text-align:center">REB</div>
+        <div style="text-align:center">AST</div>
+        <div style="text-align:center">STL</div>
+        <div style="text-align:center">BLK</div>
+        <div style="text-align:center;color:var(--red)">FOUL</div>
+        <div style="text-align:center;color:var(--red)">TO</div>
+        <div style="text-align:right">FP</div>
+      </div>
+      ${rows.length === 0 ? `
+        <div style="text-align:center;padding:32px;color:var(--muted)">
+          No stats yet for Week ${week}.
+        </div>
+      ` : rows.map((r, i) => {
+        const isMine = me && r.owner === me.username;
+        return `
+          <div style="display:grid;grid-template-columns:${grid};gap:4px;padding:8px 12px;border-bottom:1px solid rgba(26,51,80,.3);align-items:center;${isMine?'background:rgba(77,158,255,.06)':''}">
+            <div style="text-align:center;font-weight:800;color:${i<3?'var(--gold)':'var(--muted)'};font-size:.78rem">${i+1}</div>
+            <div style="display:flex;align-items:center;gap:8px;min-width:0">
+              <div style="width:24px;height:24px;border-radius:50%;background:${r.p.color}33;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:800;color:${r.p.color};flex-shrink:0">#${r.p.num}</div>
+              <div style="min-width:0">
+                <div style="font-weight:700;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.p.name}</div>
+                <div style="font-size:.65rem;color:${r.p.color}">${r.p.team}</div>
+              </div>
+            </div>
+            <div style="font-size:.72rem;font-weight:700;color:${isMine?'var(--lblue)':'var(--muted)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.owner}${isMine?' (you)':''}</div>
+            ${['pts','reb','ast','stl','blk'].map(k => `<div style="text-align:center;font-weight:700;font-size:.85rem;color:${r.s[k]>0?'var(--text)':'var(--border)'}">${r.s[k]||'–'}</div>`).join('')}
+            <div style="text-align:center;font-weight:700;font-size:.85rem;color:${r.s.foul>0?'var(--red)':'var(--border)'}">${r.s.foul||'–'}</div>
+            <div style="text-align:center;font-weight:700;font-size:.85rem;color:${r.s.to>0?'var(--red)':'var(--border)'}">${r.s.to||'–'}</div>
+            <div style="text-align:right;font-weight:900;font-family:'Orbitron',monospace;font-size:.95rem;color:${r.fp>0?'var(--lblue)':r.fp<0?'var(--red)':'var(--muted)'}">${r.fp!==0?r.fp.toFixed(1):'–'}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+
+    <div style="margin-top:12px;padding:10px 14px;background:var(--surf);border:1px solid var(--border);border-radius:10px;font-size:.75rem;color:var(--muted);line-height:1.55">
+      Fantasy points = PTS×1.0 + REB×1.2 + AST×1.5 + STL×2.0 + BLK×2.0 − FOUL×1.0 − TO×2.0.
+      Only each manager's top 5 players (by FP that week) count toward their team total.
+    </div>
+  `;
 }
 
 function renderFreeAgency(){
@@ -2453,9 +2606,20 @@ function renderFreeAgency(){
   const filterFA=window._faFilter||'';
   const filtered=freeAgents.filter(p=>p.name.toLowerCase().includes(filterFA.toLowerCase()));
 
+  const locked = isLineupLocked() && !isAdmin();
+  const lockBanner = locked ? `
+    <div style="background:linear-gradient(135deg,rgba(255,80,80,.12),rgba(255,184,0,.08));border:1px solid rgba(255,80,80,.35);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <div style="font-size:1.4rem">🔒</div>
+      <div>
+        <div style="font-weight:800;color:var(--red)">Lineups are locked</div>
+        <div style="font-size:.82rem;color:var(--muted)">Add/drop window closes ${formatLockWindow()}. Come back after the lock lifts to make moves.</div>
+      </div>
+    </div>` : '';
+
   return `
     <h1 class="page-title">Free Agency</h1>
     <p class="page-sub">${g.name} · ${freeAgents.length} players available</p>
+    ${lockBanner}
 
     <div class="g2" style="gap:20px;align-items:start">
 
@@ -2826,6 +2990,53 @@ function renderAdminSync(){
         <button class="btn btn-blue" onclick="grantFreeAccount()">Create Free Account</button>
         <div id="ga_msg" style="margin-top:10px;font-size:.85rem;line-height:1.5"></div>
       </div>
+
+      <!-- Lineup lock window -->
+      ${(() => {
+        const lock = getLineupLock();
+        const locked = isLineupLocked();
+        return `
+          <div class="card" style="border-color:${locked?'rgba(255,80,80,.4)':'rgba(0,232,122,.25)'}">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <h3 style="font-weight:800">🔒 Lineup Lock</h3>
+              <span class="badge ${locked?'b-red':'b-green'}" style="background:${locked?'rgba(255,80,80,.15)':'rgba(0,232,122,.15)'};color:${locked?'var(--red)':'var(--green)'}">${locked?'LOCKED NOW':'UNLOCKED'}</span>
+            </div>
+            <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+              Players can't add/drop during the lock window. Admins are exempt.
+              Times are in your browser's local timezone.
+            </p>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer;font-size:.9rem;font-weight:700">
+              <input type="checkbox" ${lock.enabled?'checked':''} onchange="setLineupLockEnabled(this.checked)" style="width:16px;height:16px;accent-color:var(--blue)">
+              Enable lineup lock
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px">
+              <div>
+                <label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px">Lock starts (day)</label>
+                <select class="fi" onchange="setLineupLockField('startDay', parseInt(this.value))">
+                  ${DAY_NAMES.map((d,i)=>`<option value="${i}" ${i===lock.startDay?'selected':''}>${d}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px">Lock starts (hour, 0-23)</label>
+                <input type="number" class="fi" min="0" max="23" value="${lock.startHour}" onchange="setLineupLockField('startHour', Math.max(0,Math.min(23,parseInt(this.value)||0)))">
+              </div>
+              <div>
+                <label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px">Lock ends (day)</label>
+                <select class="fi" onchange="setLineupLockField('endDay', parseInt(this.value))">
+                  ${DAY_NAMES.map((d,i)=>`<option value="${i}" ${i===lock.endDay?'selected':''}>${d}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px">Lock ends (hour, 0-23)</label>
+                <input type="number" class="fi" min="0" max="23" value="${lock.endHour}" onchange="setLineupLockField('endHour', Math.max(0,Math.min(23,parseInt(this.value)||0)))">
+              </div>
+            </div>
+            <div style="margin-top:12px;padding:10px 12px;background:var(--surf2);border-radius:8px;font-size:.82rem;color:var(--text)">
+              Current window: <strong>${formatLockWindow()}</strong>
+            </div>
+          </div>
+        `;
+      })()}
 
       <!-- Reset a player's password -->
       <div class="card">
@@ -3748,6 +3959,15 @@ async function grantFreeAccount(){
   document.getElementById('ga_password').value = '';
   document.getElementById('ga_admin').checked = false;
   document.getElementById('ga_adminpass').value = '';
+}
+
+function setLineupLockEnabled(on){
+  state.lineupLock = { ...getLineupLock(), enabled: !!on };
+  save(); render();
+}
+function setLineupLockField(field, value){
+  state.lineupLock = { ...getLineupLock(), [field]: value };
+  save(); render();
 }
 
 async function adminResetPassword(){
