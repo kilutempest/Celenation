@@ -3249,6 +3249,9 @@ function renderAdminSync(){
         `;
       })()}
 
+      <!-- Fix a bad roster -->
+      ${renderAdminFixRoster()}
+
       <!-- Reset a player's password -->
       <div class="card">
         <h3 style="font-weight:800;margin-bottom:6px">🔑 Reset a Player's Password</h3>
@@ -3302,6 +3305,150 @@ function renderAdminSync(){
         No manual steps — just advance the week after each game Sunday.
       </div>
     </div>`;
+}
+
+// ─── FIX ROSTER ────────────────────────────────────────────────────────────
+// Swap a player between two managers. For fixing a draft that went in wrong —
+// the one thing Free Agency can't do, since that only trades against the FA
+// pool. Touches whichever roster maps actually hold the two players, so it
+// works on group rosters, championship rosters, or both.
+
+// Every manager who owns a roster of any kind, deduped and sorted.
+function allRosteredManagers(){
+  const set = new Set();
+  Object.values(state.groups || {}).forEach(g => (g.managers || []).forEach(m => set.add(m)));
+  Object.keys(state.rosters || {}).forEach(m => set.add(m));
+  Object.keys(state.champRosters || {}).forEach(m => set.add(m));
+  return [...set].sort();
+}
+
+// A manager's players across both roster types, tagged with where they sit.
+function managerPlayerOptions(manager){
+  if(!manager) return [];
+  const group = state.rosters?.[manager] || [];
+  const champ = state.champRosters?.[manager] || [];
+  const ids = [...new Set([...group, ...champ])];
+  return ids.map(id => {
+    const p = PLAYER_MAP[id];
+    const where = [group.includes(id) ? 'group' : null, champ.includes(id) ? 'champ' : null].filter(Boolean);
+    return { id, name: p ? p.name : `Unknown #${id}`, team: p?.team || '', where };
+  }).sort((a,b) => a.name.localeCompare(b.name));
+}
+
+function renderAdminFixRoster(){
+  const managers = allRosteredManagers();
+  if(managers.length < 2) return '';
+
+  const mgrA = window._fixMgrA || '';
+  const mgrB = window._fixMgrB || '';
+  const optsA = managerPlayerOptions(mgrA);
+  const optsB = managerPlayerOptions(mgrB);
+  const pidA = window._fixPidA || '';
+  const pidB = window._fixPidB || '';
+
+  const mgrSelect = (side, value) => `
+    <select onchange="window._fixMgr${side}=this.value;window._fixPid${side}='';render()"
+      style="width:100%;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:700">
+      <option value="">Choose a manager…</option>
+      ${managers.map(m => `<option value="${m}" ${m===value?'selected':''}>${m}</option>`).join('')}
+    </select>`;
+
+  const playerSelect = (side, opts, value, manager) => `
+    <select onchange="window._fixPid${side}=this.value;render()" ${manager?'':'disabled'}
+      style="width:100%;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:6px">
+      <option value="">${manager ? 'Choose a player…' : 'Pick a manager first'}</option>
+      ${opts.map(o => `<option value="${o.id}" ${String(o.id)===String(value)?'selected':''}>${o.name}${o.team?' · '+o.team:''} (${o.where.join(' + ')})</option>`).join('')}
+    </select>`;
+
+  const ready = mgrA && mgrB && pidA && pidB;
+
+  return `
+    <div class="card">
+      <h3 style="font-weight:800;margin-bottom:6px">🔁 Fix a Roster (Swap Players)</h3>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+        Trade one player straight across between two managers — for when a draft pick went to the wrong team.
+        Whatever you swap here is applied to the group roster, the championship roster, or both, depending on where the players sit.
+        <strong style="color:var(--text)">Scores and standings recalculate afterwards.</strong>
+      </p>
+
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center">
+        <div>
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Manager A</label>
+          ${mgrSelect('A', mgrA)}
+          ${playerSelect('A', optsA, pidA, mgrA)}
+        </div>
+        <div style="font-size:1.4rem;color:var(--lblue);padding-top:18px">⇄</div>
+        <div>
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Manager B</label>
+          ${mgrSelect('B', mgrB)}
+          ${playerSelect('B', optsB, pidB, mgrB)}
+        </div>
+      </div>
+
+      <button class="btn btn-blue" style="margin-top:14px" onclick="swapRosterPlayers()" ${ready?'':'disabled'}>
+        ⇄ Swap Players
+      </button>
+      <div id="fixRosterMsg" style="margin-top:10px;font-size:.85rem"></div>
+    </div>`;
+}
+
+function swapRosterPlayers(){
+  const setMsg = (color, html) => {
+    const el = document.getElementById('fixRosterMsg');
+    if(el){ el.style.color = color; el.innerHTML = html; }
+  };
+
+  const a = window._fixMgrA, b = window._fixMgrB;
+  const pa = parseInt(window._fixPidA, 10), pb = parseInt(window._fixPidB, 10);
+  if(!a || !b || !pa || !pb) return setMsg('var(--red)', '❌ Pick a manager and a player on both sides.');
+  if(a === b) return setMsg('var(--red)', "❌ Pick two different managers — you can't swap with yourself.");
+  if(pa === pb) return setMsg('var(--red)', '❌ Those are the same player.');
+
+  const nameA = PLAYER_MAP[pa]?.name || `#${pa}`;
+  const nameB = PLAYER_MAP[pb]?.name || `#${pb}`;
+
+  // Refuse anything that would leave a manager holding the same player twice.
+  const ROSTER_MAPS = [['rosters','group'], ['champRosters','championship']];
+  for(const [key] of ROSTER_MAPS){
+    const ra = state[key]?.[a] || [], rb = state[key]?.[b] || [];
+    if(ra.includes(pa) && ra.includes(pb)) return setMsg('var(--red)', `❌ ${a} already has ${nameB}.`);
+    if(rb.includes(pb) && rb.includes(pa)) return setMsg('var(--red)', `❌ ${b} already has ${nameA}.`);
+  }
+
+  if(!confirm(`Swap ${nameA} (${a}) with ${nameB} (${b})?\n\nPast weeks recalculate, so scores and standings may change.`)) return;
+
+  const touched = [];
+  ROSTER_MAPS.forEach(([key, label]) => {
+    const ra = state[key]?.[a], rb = state[key]?.[b];
+    if(!ra || !rb) return;
+    const ia = ra.indexOf(pa), ib = rb.indexOf(pb);
+    if(ia === -1 || ib === -1) return;   // pair isn't on this roster type
+    ra[ia] = pb;
+    rb[ib] = pa;
+    touched.push(label);
+  });
+
+  if(!touched.length){
+    return setMsg('var(--red)', `❌ Couldn't swap — ${a} doesn't have ${nameA} and ${b} doesn't have ${nameB} on the same roster type.`);
+  }
+
+  // Log both sides so the swap shows up in the group's transaction feed.
+  if(!state.transactions) state.transactions = [];
+  const ts = Date.now();
+  const gidA = state.users?.[a]?.groupId, gidB = state.users?.[b]?.groupId;
+  state.transactions.unshift({groupId: gidA, username: a, added: pb, dropped: pa, ts});
+  state.transactions.unshift({groupId: gidB, username: b, added: pa, dropped: pb, ts});
+
+  // Rosters feed every score, so rebuild each week and each championship round.
+  for(let w = 1; w <= 7; w++) recalcMatchupsForWeek(w);
+  (state.bracket?.rounds || []).forEach((_, ri) => recalcChampRound(ri));
+
+  save();
+  window._fixPidA = ''; window._fixPidB = '';
+  render();
+  setMsg('var(--green)',
+    `✅ Swapped <strong>${nameA}</strong> → ${b} and <strong>${nameB}</strong> → ${a} ` +
+    `on the ${touched.join(' and ')} roster${touched.length>1?'s':''}. Scores recalculated.`);
 }
 
 async function adminSyncRosters(){
