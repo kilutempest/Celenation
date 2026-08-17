@@ -1546,9 +1546,11 @@ function getMatchupScore(username, groupId, week){
   return m.m1===username ? {mine:m.s1,opp:m.s2,opponent:m.m2,done:m.done} : {mine:m.s2,opp:m.s1,opponent:m.m1,done:m.done};
 }
 
-function calcWeekScore(username, week, useChampRoster=false){
-  // During bracket stage, use championship roster if available
-  const roster = (useChampRoster && state.champRosters?.[username]?.length)
+function calcWeekScore(username, week, useChampRoster){
+  // Championship rounds always score off the championship roster. Callers can
+  // still force it either way, but by default the week key decides.
+  const useChamp = useChampRoster === undefined ? isChampWeek(week) : useChampRoster;
+  const roster = (useChamp && state.champRosters?.[username]?.length)
     ? state.champRosters[username]
     : (state.rosters[username]||[]);
   // getPlayerWeekStats handles snap delta + manual override automatically.
@@ -1562,6 +1564,77 @@ function isInChampBracket(username){
   const b=state.bracket;
   if(!b?.generated||!b.rounds[0]) return false;
   return b.rounds[0].some(m=>m.m1===username||m.m2===username);
+}
+
+// ─── CHAMPIONSHIP ROUNDS ───────────────────────────────────────────────────
+// Bracket rounds are scored exactly like regular-season weeks. Each round gets
+// its own pseudo-week key — 'c1', 'c2', 'c3' — so weeklyStats, getPlayerWeekStats
+// and calcWeekScore all work unchanged. The commissioner types stats per round
+// the same way they type them per week, and closing a round picks the winner
+// off those scores instead of a manual button.
+
+function champWeekKey(roundIdx){ return 'c' + (roundIdx + 1); }
+function isChampWeek(week){ return typeof week === 'string' && /^c\d+$/.test(week); }
+function champWeekRound(week){ return isChampWeek(week) ? parseInt(week.slice(1),10) - 1 : -1; }
+
+// Rounds are named from the back: the last one is always the Final.
+const CHAMP_ROUND_LABELS = ['Championship','Semifinals','Quarterfinals','Round of 16'];
+function champRoundNames(){
+  const rounds = state.bracket?.rounds || [];
+  return rounds.map((_, i) => CHAMP_ROUND_LABELS[rounds.length - 1 - i] || `Round ${i+1}`);
+}
+function champRoundName(roundIdx){ return champRoundNames()[roundIdx] || `Round ${roundIdx+1}`; }
+
+// Human label for any scoring period, regular or championship.
+function weekLabel(week){
+  return isChampWeek(week) ? champRoundName(champWeekRound(week)) : 'Week ' + week;
+}
+
+// The bracket is playable once it's generated AND the champ re-draft is done —
+// before that there are no championship rosters to score.
+function champIsLive(){ return !!(state.bracket?.generated && state.champDraft?.done); }
+
+// Only matches with two real teams are scorable (later rounds start as TBD).
+function isLiveMatch(m){ return !!(m && m.m1 && m.m2 && m.m1!=='TBD' && m.m2!=='TBD'); }
+function champRoundMatches(roundIdx){ return (state.bracket?.rounds?.[roundIdx] || []).filter(isLiveMatch); }
+
+// Index of the round currently being played. Falls back to "first round that
+// still has an undecided match" for brackets saved before rounds were tracked.
+function currentChampRound(){
+  const b = state.bracket;
+  if(!b?.generated || !b.rounds?.length) return -1;
+  if(typeof b.round === 'number') return Math.min(Math.max(b.round,0), b.rounds.length-1);
+  for(let i=0;i<b.rounds.length;i++) if(b.rounds[i].some(m => isLiveMatch(m) && !m.winner)) return i;
+  return b.rounds.length - 1;
+}
+
+// Rounds the commissioner has reached — everything up to and including the
+// one in progress. Later rounds are still TBD, so they aren't scorable yet.
+function champPlayableRounds(){
+  if(!champIsLive()) return [];
+  const cur = currentChampRound();
+  return (state.bracket.rounds || []).map((_, i) => i).filter(i => i <= cur);
+}
+
+// A round is closed once every live match in it has a winner.
+function champRoundClosed(roundIdx){
+  const live = champRoundMatches(roundIdx);
+  return live.length > 0 && live.every(m => m.winner);
+}
+
+// The bracket match a manager is playing in a given round, with the opponent
+// resolved — mirrors getMatchupScore()'s shape for the regular season.
+function getChampMatch(username, roundIdx){
+  const round = state.bracket?.rounds?.[roundIdx] || [];
+  const idx = round.findIndex(m => m.m1===username || m.m2===username);
+  if(idx === -1) return null;
+  const m = round[idx];
+  return {
+    match: m, idx,
+    opponent: m.m1===username ? m.m2 : m.m1,
+    mine: m.m1===username ? m.s1 : m.s2,
+    opp:  m.m1===username ? m.s2 : m.s1,
+  };
 }
 
 function getGroupStandings(groupId){
@@ -1975,12 +2048,21 @@ function renderHome(){
       ` : `<p style="color:var(--muted)">No groups created yet. Check back soon.</p>`}
     </div>`;
 
-  const week=g.week;
-  const roster=myRoster();
+  // Once the bracket is live, the home page follows the championship round the
+  // player is in rather than the (now-finished) group week.
+  const inChamp = champIsLive() && isInChampBracket(me.username);
+  const champRound = inChamp ? currentChampRound() : -1;
+  const champMatch = inChamp ? getChampMatch(me.username, champRound) : null;
+  const champWk = champMatch ? champWeekKey(champRound) : null;
+
+  const week = champWk || g.week;
+  const roster = champMatch ? (state.champRosters[me.username]||[]) : myRoster();
   const draftDone=g.draftDone;
-  const matchup=getMatchupScore(me.username,u.groupId,week);
+  const matchup=getMatchupScore(me.username,u.groupId,g.week);
   const standings=getGroupStandings(u.groupId).slice(0,5);
   const myRec=getGroupStandings(u.groupId).find(x=>x.username===me.username);
+  // Qualified but knocked out — say so rather than silently falling back.
+  const champEliminated = inChamp && !champMatch;
 
   return `
     <div class="g2" style="gap:20px">
@@ -1993,13 +2075,15 @@ function renderHome(){
               <p style="color:var(--muted);font-size:.8rem">Group</p>
               <h2 style="font-size:1.4rem;font-weight:900">${g.name}</h2>
               <p style="color:var(--muted);font-size:.8rem;margin-top:2px">
-                ${draftDone ? `Week ${week} of 7` : 'Draft not started yet'}
+                ${champMatch ? `<span style="color:var(--gold)">🏆 ${champRoundName(champRound)}</span>`
+                  : champEliminated ? `<span style="color:var(--muted)">Eliminated from the bracket</span>`
+                  : draftDone ? `Week ${g.week} of 7` : 'Draft not started yet'}
                 ${myRec ? ` · <span style="color:var(--lblue)">${myRec.w}W–${myRec.l}L</span>` : ''}
               </p>
             </div>
             ${draftDone ? `
               <div style="text-align:right">
-                <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;font-weight:700">Roster</div>
+                <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;font-weight:700">${champMatch?'Champ Roster':'Roster'}</div>
                 <div style="font-size:1.5rem;font-weight:900">${roster.length} <span style="font-size:.85rem;color:var(--muted)">players</span></div>
               </div>
             ` : ''}
@@ -2007,18 +2091,41 @@ function renderHome(){
         </div>
 
         <!-- This week's matchup -->
-        ${draftDone && matchup ? `
+        ${champMatch ? `
           <div>
-            <p style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">⚔️ Week ${week} Matchup</p>
+            <p style="font-size:.8rem;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">🏆 ${champRoundName(champRound)} Matchup</p>
+            <div class="matchup-card highlight" style="border-color:rgba(255,184,0,.4)">
+              <div class="mc-team">
+                <div class="mc-name">${me.username}</div>
+                <div class="mc-score" style="color:var(--gold)">${calcWeekScore(me.username,champWk)}</div>
+              </div>
+              <div style="color:var(--muted);font-weight:900;font-size:.9rem">VS</div>
+              <div class="mc-team">
+                <div class="mc-name">${champMatch.opponent}</div>
+                <div class="mc-score" style="color:var(--muted)">${calcWeekScore(champMatch.opponent,champWk)}</div>
+              </div>
+            </div>
+            <button class="btn btn-outline btn-sm" style="margin-top:10px" onclick="nav('bracket')">View bracket →</button>
+          </div>
+        ` : champEliminated ? `
+          <div class="card" style="text-align:center;padding:24px">
+            <div style="font-size:1.6rem;margin-bottom:6px">🏁</div>
+            <p style="font-weight:700;margin-bottom:4px">Your run is over</p>
+            <p style="color:var(--muted);font-size:.85rem">You're out of the championship bracket — follow the rest of it from the Bracket page.</p>
+            <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="nav('bracket')">View bracket →</button>
+          </div>
+        ` : draftDone && matchup ? `
+          <div>
+            <p style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">⚔️ Week ${g.week} Matchup</p>
             <div class="matchup-card highlight">
               <div class="mc-team">
                 <div class="mc-name">${me.username}</div>
-                <div class="mc-score" style="color:var(--lblue)">${calcWeekScore(me.username,week)}</div>
+                <div class="mc-score" style="color:var(--lblue)">${calcWeekScore(me.username,g.week)}</div>
               </div>
               <div style="color:var(--muted);font-weight:900;font-size:.9rem">VS</div>
               <div class="mc-team">
                 <div class="mc-name">${matchup.opponent}</div>
-                <div class="mc-score" style="color:var(--muted)">${calcWeekScore(matchup.opponent,week)}</div>
+                <div class="mc-score" style="color:var(--muted)">${calcWeekScore(matchup.opponent,g.week)}</div>
               </div>
             </div>
           </div>
@@ -2046,7 +2153,7 @@ function renderHome(){
         ${draftDone && roster.length>0 ? `
           <div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <p style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">My Roster</p>
+              <p style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${champMatch?'My Championship Roster':'My Roster'}</p>
               <button class="btn btn-outline btn-sm" onclick="nav('myteam')">Full roster →</button>
             </div>
             <div class="roster-grid">
@@ -2058,7 +2165,7 @@ function renderHome(){
                   <div class="roster-card-name">${p.name.split(' ').pop()}</div>
                   <div class="roster-card-team" style="color:${p.color}">${p.abbr}</div>
                   <div class="roster-card-pts">${fp}</div>
-                  <div class="roster-card-sub">Wk ${week} pts</div>
+                  <div class="roster-card-sub">${champMatch?champRoundName(champRound):'Wk '+week} pts</div>
                 </div>`;
               }).join('')}
             </div>
@@ -2099,10 +2206,14 @@ function renderHome(){
 // ─── MY TEAM ───────────────────────────────────────────────────────────────
 function renderMyTeam(){
   const g=myGroup();
-  const week=g?.week||1;
-  const roster=myRoster();
+  // Once the bracket is live the championship roster is what's actually being
+  // scored, so show it by default with a toggle back to the group roster.
+  const inChamp = champIsLive() && me && isInChampBracket(me.username) && (state.champRosters?.[me.username]?.length > 0);
+  const showChamp = inChamp && window._myTeamView !== 'group';
+  const week = showChamp ? champWeekKey(currentChampRound()) : (g?.week||1);
+  const roster = showChamp ? (state.champRosters[me.username]||[]) : myRoster();
 
-  if(!g?.draftDone || roster.length===0) return `
+  if((!g?.draftDone && !showChamp) || roster.length===0) return `
     <h1 class="page-title">My Team</h1>
     <div class="card" style="text-align:center;padding:48px;color:var(--muted)">
       📋 Draft hasn't happened yet. Check back after the draft.
@@ -2126,11 +2237,18 @@ function renderMyTeam(){
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <h1 class="page-title">${me.username}'s Team</h1>
       <div style="text-align:right">
-        <div style="font-size:1.6rem;font-weight:900;color:var(--lblue)">${totalFP.toFixed(1)}</div>
-        <div style="font-size:.7rem;color:var(--muted)">Week ${week} · top 5</div>
+        <div style="font-size:1.6rem;font-weight:900;color:${showChamp?'var(--gold)':'var(--lblue)'}">${totalFP.toFixed(1)}</div>
+        <div style="font-size:.7rem;color:var(--muted)">${weekLabel(week)} · top 5</div>
       </div>
     </div>
-    <p class="page-sub">7-player roster · best 5 performers count each week</p>
+    ${inChamp ? `
+      <div style="display:inline-flex;background:var(--surf2);border-radius:8px;padding:3px;margin-bottom:10px">
+        ${[['champ','🏆 Championship Roster'],['group','Group Roster']].map(([k,l])=>
+          `<button onclick="window._myTeamView='${k}';render()" style="background:${(showChamp?'champ':'group')===k?'var(--blue)':'none'};color:${(showChamp?'champ':'group')===k?'#fff':'var(--muted)'};border:none;padding:6px 12px;border-radius:6px;font-size:.78rem;font-weight:700;cursor:pointer">${l}</button>`
+        ).join('')}
+      </div>
+    ` : ''}
+    <p class="page-sub">${showChamp?`Championship roster · scored for ${champRoundName(currentChampRound())}`:'7-player roster · best 5 performers count each week'}</p>
     <div class="card" style="padding:0;overflow:hidden">
       <div style="display:grid;grid-template-columns:${grid};padding:8px 14px;border-bottom:1px solid var(--border);font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">
         <div></div>
@@ -2169,6 +2287,8 @@ function renderMyTeam(){
 }
 
 // ─── MATCHUPS ──────────────────────────────────────────────────────────────
+function setMatchupWeek(v){ window._matchupWeek = /^c\d+$/.test(v) ? v : parseInt(v,10); render(); }
+
 function renderMatchups(){
   const u=myData();
   const g=myGroup();
@@ -2176,7 +2296,23 @@ function renderMatchups(){
 
   const week=g.week;
   const tabs=Array.from({length:week},(_,i)=>i+1);
+  const champTabs=champPlayableRounds();
   const tw=window._matchupWeek||week;
+
+  // Championship rounds are shown as extra tabs after the group weeks — same
+  // cards, scored off the championship rosters.
+  if(isChampWeek(tw)){
+    const ri=champWeekRound(tw);
+    window._champRound=ri;
+    return `
+      <h1 class="page-title">Matchups</h1>
+      <p class="page-sub">🏆 Championship bracket · ${champRoundName(ri)}</p>
+      <div class="tabs">
+        ${tabs.map(w=>`<button class="tab" onclick="setMatchupWeek('${w}')">Week ${w}</button>`).join('')}
+        ${champTabs.map(i=>`<button class="tab ${champWeekRound(tw)===i?'active':''}" onclick="setMatchupWeek('${champWeekKey(i)}')">🏆 ${champRoundName(i)}</button>`).join('')}
+      </div>
+      ${renderChampMatchups({tabs:false, heading:false})}`;
+  }
 
   const key=`g${u.groupId}_w${tw}`;
   const weekMatchups=state.matchups[key]||[];
@@ -2185,7 +2321,8 @@ function renderMatchups(){
     <h1 class="page-title">Matchups</h1>
     <p class="page-sub">${g.name} · ${g.managers.length}-team group</p>
     <div class="tabs">
-      ${tabs.map(w=>`<button class="tab ${tw===w?'active':''}" onclick="window._matchupWeek=${w};render()">Week ${w}</button>`).join('')}
+      ${tabs.map(w=>`<button class="tab ${tw===w?'active':''}" onclick="setMatchupWeek('${w}')">Week ${w}</button>`).join('')}
+      ${champTabs.map(i=>`<button class="tab" onclick="setMatchupWeek('${champWeekKey(i)}')">🏆 ${champRoundName(i)}</button>`).join('')}
     </div>
     ${weekMatchups.length===0 ? `<div class="card" style="text-align:center;padding:32px;color:var(--muted)">No matchups scheduled for this week yet.</div>` :
       `<div style="display:flex;flex-direction:column;gap:10px">
@@ -2484,27 +2621,34 @@ function doAddDrop(addId, dropId){
 // Read-only stats view for players — see week-by-week fantasy production
 // for every drafted player. Cannot edit; only admins can via the Admin
 // Stats tab.
+function setStatsViewWeek(v){ window._statsViewWeek = /^c\d+$/.test(v) ? v : parseInt(v,10); render(); }
+
 function renderStatsView(){
   const g = myGroup();
   const currentWeek = g?.week || 1;
   const week = window._statsViewWeek || Math.min(currentWeek, 7);
   const scope = window._statsViewScope || 'all';   // 'all' | 'mine' | 'group'
   const filter = (window._statsViewFilter || '').toLowerCase();
+  const champ = isChampWeek(week);
+
+  // Championship rounds score the championship rosters, so both the player
+  // pool and the Owner column come from there instead.
+  const rosterSource = champ ? (state.champRosters || {}) : (state.rosters || {});
 
   // Build the set of player IDs to consider based on scope
   let pidSet;
   if(scope === 'mine' && me){
-    pidSet = new Set(state.rosters[me.username] || []);
-  } else if(scope === 'group' && g){
+    pidSet = new Set(rosterSource[me.username] || []);
+  } else if(scope === 'group' && g && !champ){
     pidSet = new Set(g.managers.flatMap(m => state.rosters[m] || []));
   } else {
     pidSet = new Set();
-    Object.values(state.rosters || {}).forEach(arr => (arr || []).forEach(id => pidSet.add(id)));
+    Object.values(rosterSource).forEach(arr => (arr || []).forEach(id => pidSet.add(id)));
   }
 
   // Map pid → the manager who owns them (for the "Owner" column)
   const ownerByPid = {};
-  Object.entries(state.rosters || {}).forEach(([mgr, arr]) => {
+  Object.entries(rosterSource).forEach(([mgr, arr]) => {
     (arr || []).forEach(id => { ownerByPid[id] = mgr; });
   });
 
@@ -2522,6 +2666,7 @@ function renderStatsView(){
 
   const grid = '30px 1fr 90px 40px 40px 40px 40px 40px 42px 40px 60px';
   const weekOptions = Array.from({length: Math.min(currentWeek, 7)}, (_, i) => i + 1);
+  const champRounds = champPlayableRounds();
 
   return `
     <h1 class="page-title">📊 Weekly Stats</h1>
@@ -2530,13 +2675,23 @@ function renderStatsView(){
     <div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Week</span>
-          <select onchange="window._statsViewWeek=parseInt(this.value);render()" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
-            ${weekOptions.map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+          <span style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Period</span>
+          <select onchange="setStatsViewWeek(this.value)" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
+            <optgroup label="Group stage">
+              ${weekOptions.map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+            </optgroup>
+            ${champRounds.length ? `
+              <optgroup label="Championship">
+                ${champRounds.map(ri => {
+                  const k = champWeekKey(ri);
+                  return `<option value="${k}" ${k===week?'selected':''}>🏆 ${champRoundName(ri)}</option>`;
+                }).join('')}
+              </optgroup>
+            ` : ''}
           </select>
         </label>
         <div style="display:flex;background:var(--surf2);border-radius:8px;padding:3px">
-          ${[['all','All Players'],['group', g ? 'My Group' : ''],['mine','My Roster']].filter(([k,l])=>l).map(([k,l])=>
+          ${[['all','All Players'],['group', (g && !champ) ? 'My Group' : ''],['mine','My Roster']].filter(([k,l])=>l).map(([k,l])=>
             `<button onclick="window._statsViewScope='${k}';render()" style="background:${scope===k?'var(--blue)':'none'};color:${scope===k?'#fff':'var(--muted)'};border:none;padding:6px 12px;border-radius:6px;font-size:.78rem;font-weight:700;cursor:pointer">${l}</button>`
           ).join('')}
         </div>
@@ -2561,7 +2716,7 @@ function renderStatsView(){
       </div>
       ${rows.length === 0 ? `
         <div style="text-align:center;padding:32px;color:var(--muted)">
-          No stats yet for Week ${week}.
+          No stats yet for ${weekLabel(week)}.
         </div>
       ` : rows.map((r, i) => {
         const isMine = me && r.owner === me.username;
@@ -2824,6 +2979,60 @@ function renderGroups(){
 }
 
 // ─── BRACKET ───────────────────────────────────────────────────────────────
+// Championship matchup board — the bracket's answer to the regular-season
+// Matchups page. One tab per round the bracket has reached, live scores off
+// the stats entered for that round.
+// `opts.tabs` / `opts.heading` are turned off when the Matchups page embeds
+// this, since that page draws its own tab bar and title.
+function renderChampMatchups(opts){
+  const {tabs = true, heading = true} = opts || {};
+  const b = state.bracket;
+  const cur = currentChampRound();
+  const rounds = champPlayableRounds();
+  if(!rounds.length) return '';
+
+  let ri = window._champRound;
+  if(typeof ri !== 'number' || !rounds.includes(ri)) ri = cur;
+  const wk = champWeekKey(ri);
+  const matches = (b.rounds[ri] || []).filter(isLiveMatch);
+  const closed = champRoundClosed(ri);
+
+  return `
+    ${heading ? `<h2 style="font-family:'Russo One',sans-serif;font-size:1rem;margin-bottom:10px">⚔️ Championship Matchups</h2>` : ''}
+    ${tabs && rounds.length > 1 ? `
+      <div class="tabs">
+        ${rounds.map(i => `<button class="tab ${i===ri?'active':''}" onclick="window._champRound=${i};render()">${champRoundName(i)}</button>`).join('')}
+      </div>
+    ` : ''}
+    ${matches.length === 0 ? `
+      <div class="card" style="text-align:center;padding:32px;color:var(--muted)">Matchups for this round aren't set yet.</div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${matches.map(m => {
+          const s1 = calcWeekScore(m.m1, wk);
+          const s2 = calcWeekScore(m.m2, wk);
+          const mine = me && (m.m1===me.username || m.m2===me.username);
+          return `<div class="matchup-card ${mine?'highlight':''}">
+            <div class="mc-team">
+              <div style="display:flex;justify-content:center;margin-bottom:6px">${avatarCircle(m.m1,40)}</div>
+              <div class="mc-name" style="color:${m.winner===m.m1?'var(--gold)':m.m1===me?.username?'var(--lblue)':'var(--text)'}">${m.m1}</div>
+              <div class="mc-score" style="color:${s1>s2?'var(--green)':s1<s2?'var(--red)':'var(--muted)'}">${s1}</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:.7rem;font-weight:800;color:var(--muted)">VS</div>
+              ${m.winner?`<span class="badge b-gray">FINAL</span>`:closed?`<span class="badge b-gray">CLOSED</span>`:`<span class="badge b-gold">LIVE</span>`}
+            </div>
+            <div class="mc-team">
+              <div style="display:flex;justify-content:center;margin-bottom:6px">${avatarCircle(m.m2,40)}</div>
+              <div class="mc-name" style="color:${m.winner===m.m2?'var(--gold)':m.m2===me?.username?'var(--lblue)':'var(--text)'}">${m.m2}</div>
+              <div class="mc-score" style="color:${s2>s1?'var(--green)':s2<s1?'var(--red)':'var(--muted)'}">${s2}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    `}`;
+}
+
 function renderBracket(){
   const b=state.bracket;
   if(!b.generated||b.rounds.length===0) return `
@@ -2833,20 +3042,20 @@ function renderBracket(){
       <small>Top ${ADVANCERS_PER_GROUP} from each group advance to the championship bracket</small>
     </div>`;
 
-  // Label rounds from the back: the last round is always the Final, the one
-  // before is the Semis, etc. Works whether the bracket has 1, 2, or 3 rounds.
-  const ROUND_LABELS = ['Championship', 'Semifinals', 'Quarterfinals', 'Round of 16'];
-  const roundNames = b.rounds.map((_, i) => ROUND_LABELS[b.rounds.length - 1 - i] || `Round ${i+1}`);
+  // Rounds are labelled from the back — the last one is always the Final.
+  const roundNames = champRoundNames();
   const champDraftDone=state.champDraft?.done;
-  const champSnap=state.statSnapshots?.['champ']||null;
+  const live = champIsLive();
+  const cur = currentChampRound();
   const qualifierCount = (b.rounds[0]||[]).reduce((n, m) => n + (m.m1 && m.m1 !== 'TBD' ? 1 : 0) + (m.m2 && m.m2 !== 'TBD' ? 1 : 0), 0);
 
-  // Championship week number (just use a special "week 8" key)
-  const CHAMP_WEEK='champ';
+  // Score any round the bracket has actually reached; later rounds are still TBD.
+  const scoreFor = (username, ri) =>
+    (live && ri <= cur && username && username !== 'TBD') ? calcWeekScore(username, champWeekKey(ri)) : null;
 
   return `
     <h1 class="page-title">🏆 Championship Bracket</h1>
-    <p class="page-sub">Top ${ADVANCERS_PER_GROUP} from each group · ${champDraftDone?'Championship rosters active':'Championship draft pending'}</p>
+    <p class="page-sub">Top ${ADVANCERS_PER_GROUP} from each group · ${champDraftDone?`Championship rosters active · ${champRoundName(cur)}`:'Championship draft pending'}</p>
 
     ${!champDraftDone?`
       <div style="background:rgba(255,184,0,.08);border:1px solid rgba(255,184,0,.25);border-radius:12px;padding:14px 18px;margin-bottom:20px;font-size:.85rem;color:var(--muted)">
@@ -2856,14 +3065,16 @@ function renderBracket(){
       </div>
     `:''}
 
+    ${live ? renderChampMatchups() : ''}
+
+    <h2 style="font-family:'Russo One',sans-serif;font-size:1rem;margin:${live?'28px 0 14px':'0 0 14px'}">Bracket</h2>
     <div class="bracket">
       ${b.rounds.map((round,ri)=>`
         <div class="bracket-round">
           <div class="bracket-round-title">${roundNames[ri]||`Round ${ri+1}`}</div>
           ${round.map(m=>{
-            // Live champ week scores if snap taken
-            const s1=champDraftDone&&champSnap ? calcWeekScore(m.m1||'',CHAMP_WEEK,true) : (m.s1??null);
-            const s2=champDraftDone&&champSnap ? calcWeekScore(m.m2||'',CHAMP_WEEK,true) : (m.s2??null);
+            const s1=scoreFor(m.m1, ri) ?? (m.s1??null);
+            const s2=scoreFor(m.m2, ri) ?? (m.s2??null);
             return `<div class="bracket-match">
               <div class="bracket-team ${m.winner===m.m1?'winner':m.m1?'':'tbd'}">
                 <div style="display:flex;align-items:center;gap:5px;flex:1">
@@ -3537,15 +3748,23 @@ function renderAdminDraft(){
 
 // Manual stat entry — admin types in each player's weekly stats by hand.
 // Used when the RecLeague auto-sync isn't available or isn't trusted.
+// Week dropdowns accept both numeric weeks and championship round keys ('c1'),
+// so the value has to stay a string when it's a champ round.
+function setStatsWeek(v){ window._statsWeek = /^c\d+$/.test(v) ? v : parseInt(v,10); render(); }
+
 function renderAdminStats(){
   const week = window._statsWeek || 1;
   const filter = (window._statsFilter || '').toLowerCase();
   const showOnlyDrafted = window._statsOnlyDrafted !== false; // default true
+  const champ = isChampWeek(week);
 
-  // Set of every drafted player ID across every group's roster
+  // Championship rounds are scored off the championship rosters, not the
+  // group rosters — so "drafted" means something different in that mode.
+  const rosterSource = champ ? (state.champRosters || {}) : (state.rosters || {});
   const draftedIds = new Set();
-  Object.values(state.rosters || {}).forEach(arr => (arr || []).forEach(id => draftedIds.add(id)));
+  Object.values(rosterSource).forEach(arr => (arr || []).forEach(id => draftedIds.add(id)));
   const draftedCount = draftedIds.size;
+  const champRounds = champPlayableRounds();
 
   const candidates = ALL_PLAYERS.filter(p => {
     if(showOnlyDrafted && !draftedIds.has(p.id)) return false;
@@ -3566,27 +3785,50 @@ function renderAdminStats(){
       <div class="card" style="margin-bottom:14px">
         <h3 style="font-weight:800;margin-bottom:6px">📋 Manual Stat Entry</h3>
         <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
-          Type each player's stats for the week. Fantasy points (FP) update instantly. Matchup scores and standings rebuild automatically.
-          ${filledCount > 0 ? `<span style="color:var(--green)"> ${filledCount}/${candidates.length} rows have stats this week.</span>` : ''}
+          Type each player's stats for the ${champ?'round':'week'}. Fantasy points (FP) update instantly.
+          ${champ ? 'Bracket matchup scores rebuild automatically.' : 'Matchup scores and standings rebuild automatically.'}
+          ${filledCount > 0 ? `<span style="color:var(--green)"> ${filledCount}/${candidates.length} rows have stats.</span>` : ''}
         </p>
 
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Week</span>
-            <select onchange="window._statsWeek=parseInt(this.value);render()" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
-              ${[1,2,3,4,5,6,7].map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+            <span style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Period</span>
+            <select onchange="setStatsWeek(this.value)" style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-weight:700">
+              <optgroup label="Group stage">
+                ${[1,2,3,4,5,6,7].map(w => `<option value="${w}" ${w===week?'selected':''}>Week ${w}</option>`).join('')}
+              </optgroup>
+              ${champRounds.length ? `
+                <optgroup label="Championship">
+                  ${champRounds.map(ri => {
+                    const k = champWeekKey(ri);
+                    return `<option value="${k}" ${k===week?'selected':''}>🏆 ${champRoundName(ri)}</option>`;
+                  }).join('')}
+                </optgroup>
+              ` : ''}
             </select>
           </label>
           <input placeholder="Search player or team…" value="${filter}" oninput="window._statsFilter=this.value;render()"
             style="flex:1;min-width:200px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
           <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer;color:var(--text)">
             <input type="checkbox" ${showOnlyDrafted?'checked':''} onchange="window._statsOnlyDrafted=this.checked;render()" style="width:16px;height:16px;accent-color:var(--blue)">
-            Drafted only (${draftedCount})
+            ${champ?'Champ rosters':'Drafted'} only (${draftedCount})
           </label>
-          <button class="btn btn-outline btn-sm" onclick="clearWeekStats(${week})" style="color:var(--red);border-color:rgba(255,80,80,.3)" title="Clear every stat entry for this week">
-            🗑 Clear Week
+          <button class="btn btn-outline btn-sm" onclick="clearWeekStats('${week}')" style="color:var(--red);border-color:rgba(255,80,80,.3)" title="Clear every stat entry for this period">
+            🗑 Clear
           </button>
         </div>
+
+        ${champ ? `
+          <div style="margin-top:12px;padding:10px 12px;background:rgba(255,184,0,.08);border:1px solid rgba(255,184,0,.25);border-radius:8px;font-size:.8rem;color:var(--muted)">
+            🏆 <strong style="color:var(--gold)">${champRoundName(champWeekRound(week))}.</strong>
+            These stats score the championship rosters only. When you're done, go to
+            <strong style="color:var(--text)">Week Control</strong> and close the round — winners are decided by these scores.
+          </div>
+        ` : champRounds.length === 0 && state.bracket?.generated && !state.champDraft?.done ? `
+          <div style="margin-top:12px;padding:10px 12px;background:rgba(255,184,0,.08);border:1px solid rgba(255,184,0,.25);border-radius:8px;font-size:.8rem;color:var(--muted)">
+            Championship rounds appear here once the <strong style="color:var(--text)">🏆 Champ Draft</strong> is finished.
+          </div>
+        ` : ''}
       </div>
 
       <div class="card" style="padding:0;overflow:hidden">
@@ -3624,7 +3866,7 @@ function renderAdminStats(){
               </div>
               ${['pts','reb','ast','stl','blk','foul','to'].map(k => `
                 <input type="number" min="0" inputmode="numeric" value="${s[k] || ''}" placeholder="0"
-                  onchange="updatePlayerStat(${week}, ${p.id}, '${k}', this.value, '${fpCellId}')"
+                  onchange="updatePlayerStat('${week}', ${p.id}, '${k}', this.value, '${fpCellId}')"
                   style="width:100%;text-align:center;padding:5px 4px;border:1px solid var(--border);border-radius:5px;background:var(--surf2);color:var(--text);font-size:.85rem;font-family:'Orbitron',monospace">
               `).join('')}
               <div id="${fpCellId}" style="text-align:right;font-weight:800;font-family:'Orbitron',monospace;font-size:.95rem;color:${fp>0?'var(--lblue)':fp<0?'var(--red)':'var(--muted)'}">${fp.toFixed(1)}</div>
@@ -3646,6 +3888,9 @@ function renderAdminStats(){
 // updates the inline FP display, and persists. No full re-render so the user
 // can keep typing across fields without losing focus.
 function updatePlayerStat(week, playerId, statKey, rawValue, fpCellId){
+  // `week` arrives as a string from the inline handler — keep champ keys ('c1')
+  // as-is, coerce plain weeks back to numbers.
+  if(!isChampWeek(week)) week = parseInt(week, 10);
   if(!state.weeklyStats) state.weeklyStats = {};
   const key = `w${week}_${playerId}`;
   if(!state.weeklyStats[key]) state.weeklyStats[key] = {};
@@ -3669,6 +3914,7 @@ function updatePlayerStat(week, playerId, statKey, rawValue, fpCellId){
 // Recompute s1/s2 on every matchup for `week` for every drafted group.
 // Picks up the new stat right away in matchups/standings/home pages.
 function recalcMatchupsForWeek(week){
+  if(isChampWeek(week)){ recalcChampRound(champWeekRound(week)); return; }
   Object.values(state.groups || {}).forEach(g => {
     if(!g.draftDone) return;
     const matchupsKey = `g${g.id}_w${week}`;
@@ -3683,8 +3929,22 @@ function recalcMatchupsForWeek(week){
   });
 }
 
+// Recompute s1/s2 for every match in one bracket round from the stats entered
+// under that round's week key. Winners are NOT assigned here — that happens
+// when the commissioner closes the round in Week Control.
+function recalcChampRound(roundIdx){
+  const round = state.bracket?.rounds?.[roundIdx];
+  if(!round) return;
+  const wk = champWeekKey(roundIdx);
+  round.forEach(m => {
+    m.s1 = (m.m1 && m.m1!=='TBD') ? calcWeekScore(m.m1, wk) : null;
+    m.s2 = (m.m2 && m.m2!=='TBD') ? calcWeekScore(m.m2, wk) : null;
+  });
+}
+
 function clearWeekStats(week){
-  if(!confirm(`Clear ALL stat entries for Week ${week}? Cannot be undone.`)) return;
+  if(!isChampWeek(week)) week = parseInt(week, 10);
+  if(!confirm(`Clear ALL stat entries for ${weekLabel(week)}? Cannot be undone.`)) return;
   if(!state.weeklyStats) return;
   const prefix = `w${week}_`;
   Object.keys(state.weeklyStats).forEach(k => {
@@ -3740,6 +4000,119 @@ function renderAdminWeek(){
         </div>
       `;}).join('')}
       ${groups.length===0?`<p style="color:var(--muted)">No groups with completed drafts yet.</p>`:''}
+      ${renderAdminChampWeek()}
+    </div>`;
+}
+
+// Championship control — the bracket equivalent of the week clock. Each round
+// is closed the same way a week is: enter stats, then close. Winners come off
+// the scores instead of a manual button.
+function renderAdminChampWeek(){
+  const b = state.bracket;
+  if(!b?.generated){
+    const ready = Object.values(state.groups).filter(g => g.week >= 7 && g.draftDone).length;
+    if(ready === 0) return '';
+    return `
+      <div class="card" style="border-color:rgba(255,184,0,.3)">
+        <h3 style="font-weight:800;margin-bottom:6px">🏆 Championship</h3>
+        <p style="color:var(--muted);font-size:.82rem">
+          ${ready} group(s) have finished Week 7. Head to the <strong style="color:var(--text)">Bracket</strong> tab to generate the championship bracket,
+          then run the <strong style="color:var(--text)">🏆 Champ Draft</strong>. Round-by-round scoring shows up here after that.
+        </p>
+      </div>`;
+  }
+
+  if(!state.champDraft?.done){
+    return `
+      <div class="card" style="border-color:rgba(255,184,0,.3)">
+        <h3 style="font-weight:800;margin-bottom:6px">🏆 Championship</h3>
+        <p style="color:var(--muted);font-size:.82rem">
+          Bracket is generated. Finish the <strong style="color:var(--text)">🏆 Champ Draft</strong> — qualifiers need championship rosters
+          before rounds can be scored.
+        </p>
+      </div>`;
+  }
+
+  const ri = currentChampRound();
+  const roundName = champRoundName(ri);
+  const wk = champWeekKey(ri);
+  const live = champRoundMatches(ri);
+  const closed = champRoundClosed(ri);
+  const isFinal = ri === b.rounds.length - 1;
+  const champion = isFinal && closed ? b.rounds[ri][0]?.winner : null;
+
+  // How many championship-roster players in this round have stats yet.
+  const pids = new Set();
+  live.forEach(m => {
+    (state.champRosters[m.m1] || []).forEach(id => pids.add(id));
+    (state.champRosters[m.m2] || []).forEach(id => pids.add(id));
+  });
+  let entered = 0;
+  pids.forEach(pid => { if(state.weeklyStats?.[`w${wk}_${pid}`]) entered++; });
+
+  // Score live off the stats rather than the stored s1/s2, so the panel is
+  // always current even before anything has been recalculated.
+  const scoreOf = u => (u && u !== 'TBD') ? calcWeekScore(u, wk) : 0;
+  const ties = live.filter(m => scoreOf(m.m1) === scoreOf(m.m2) && !m.winner);
+  const canUndo = ri > 0 || closed;
+
+  return `
+    <div class="card" style="border-color:rgba(255,184,0,.35);background:rgba(255,184,0,.04)">
+      <h3 style="font-weight:800;margin-bottom:4px">🏆 Championship — ${roundName}</h3>
+      <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
+        Round ${ri+1} of ${b.rounds.length}
+        ${!closed ? ` · <span style="color:${entered===pids.size&&pids.size?'var(--green)':'var(--gold)'}">${entered}/${pids.size} players have stats this round</span>` : ` · <span style="color:var(--green)">Closed</span>`}
+      </p>
+
+      ${champion ? `
+        <div style="padding:12px;border:1px solid rgba(255,184,0,.5);background:rgba(255,184,0,.1);border-radius:10px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+          ${avatarCircle(champion,32)}
+          <div><div style="font-weight:900;color:var(--gold)">👑 ${champion}</div>
+          <div style="font-size:.75rem;color:var(--muted)">Season champion</div></div>
+        </div>
+      ` : `
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
+          ${live.length === 0 ? `<p style="color:var(--muted);font-size:.8rem">No matchups set for this round yet.</p>` : live.map(m => {
+            const s1 = scoreOf(m.m1), s2 = scoreOf(m.m2);
+            const tied = s1 === s2 && !m.winner;
+            return `<div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:6px 10px;background:var(--surf2);border-radius:8px">
+              <span style="flex:1;font-weight:700;color:${m.winner===m.m1?'var(--gold)':'var(--text)'}">${m.m1}</span>
+              <span style="font-family:'Orbitron',monospace;font-weight:800;color:${s1>s2?'var(--green)':'var(--muted)'}">${s1.toFixed(1)}</span>
+              <span style="color:var(--muted);font-size:.7rem">vs</span>
+              <span style="font-family:'Orbitron',monospace;font-weight:800;color:${s2>s1?'var(--green)':'var(--muted)'}">${s2.toFixed(1)}</span>
+              <span style="flex:1;text-align:right;font-weight:700;color:${m.winner===m.m2?'var(--gold)':'var(--text)'}">${m.m2}</span>
+              ${tied ? `<span class="badge b-gold" style="flex-shrink:0">TIE</span>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+      `}
+
+      ${ties.length && !closed ? `
+        <div style="padding:10px 12px;background:rgba(255,184,0,.1);border:1px solid rgba(255,184,0,.3);border-radius:8px;font-size:.78rem;color:var(--muted);margin-bottom:12px">
+          ${ties.length === live.length && ties.every(m => !scoreOf(m.m1) && !scoreOf(m.m2))
+            ? `No stats entered yet. Open <strong style="color:var(--text)">📋 Stats</strong>, pick <strong style="color:var(--text)">🏆 ${roundName}</strong> in the Period dropdown, and type the numbers.`
+            : `${ties.length} matchup(s) tied. Enter more stats, or pick a winner manually on the <strong style="color:var(--text)">Bracket</strong> tab, before closing.`}
+        </div>
+      ` : ''}
+
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-blue btn-sm" onclick="window._adminTab='stats';window._statsWeek='${wk}';render()">
+          📋 Enter ${roundName} Stats
+        </button>
+        ${!champion ? `
+          <button class="btn btn-sm" style="background:linear-gradient(135deg,#ffb800,#ff8a00);color:#1a1200;font-weight:800"
+            onclick="advanceChampRound()" ${live.length===0?'disabled':''}>
+            ${isFinal ? '👑 Crown Champion' : `Close ${roundName} & Advance →`}
+          </button>
+        ` : ''}
+        ${canUndo ? `
+          <button class="btn btn-outline btn-sm" onclick="undoChampRound()" style="color:var(--red);border-color:rgba(255,80,80,.3)"
+            title="Reopen the last closed round so you can fix stats and re-close">
+            ↶ Undo Round
+          </button>
+        ` : ''}
+      </div>
+      <div id="champMsg" style="margin-top:10px;font-size:.82rem"></div>
     </div>`;
 }
 
@@ -3764,20 +4137,32 @@ function renderAdminBrackets(){
       ` : ''}
       ${b.generated && b.rounds.length>0 ? `
         <div class="card">
-          <h3 style="font-weight:800;margin-bottom:14px">Advance Bracket</h3>
-          ${b.rounds.map((round,ri)=>`
+          <h3 style="font-weight:800;margin-bottom:6px">Manual Override</h3>
+          <p style="color:var(--muted);font-size:.82rem;margin-bottom:14px">
+            Rounds normally decide themselves: enter stats on the <strong style="color:var(--text)">📋 Stats</strong> tab, then close the round in
+            <strong style="color:var(--text)">Week Control</strong>. Use these buttons only to force a result — a tiebreak, or a forfeit.
+          </p>
+          ${b.rounds.map((round,ri)=>{
+            const wk = champWeekKey(ri);
+            const playable = champIsLive() && ri <= currentChampRound();
+            return `
             <div style="margin-bottom:16px">
-              <p style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">${['Quarterfinals','Semifinals','Championship'][ri]||'Round '+(ri+1)}</p>
+              <p style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">
+                ${champRoundName(ri)}${ri===currentChampRound()&&champIsLive()?` <span style="color:var(--gold)">· in progress</span>`:''}
+              </p>
               ${round.map((m,mi)=>{
-                if(!m.m1||!m.m2||m.winner) return `<div style="color:var(--green);font-size:.85rem;padding:6px 0">✅ ${m.winner} advances</div>`;
+                if(m.winner) return `<div style="color:var(--green);font-size:.85rem;padding:6px 0">✅ ${m.winner} advances</div>`;
+                if(!m.m1||!m.m2||m.m1==='TBD'||m.m2==='TBD') return `<div style="color:var(--muted);font-size:.85rem;padding:6px 0">${m.m1||'TBD'} vs ${m.m2||'TBD'}</div>`;
+                const s1 = playable ? calcWeekScore(m.m1, wk) : (m.s1 ?? 0);
+                const s2 = playable ? calcWeekScore(m.m2, wk) : (m.s2 ?? 0);
                 return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-                  <span style="font-weight:700;flex:1">${m.m1} vs ${m.m2}</span>
+                  <span style="font-weight:700;flex:1">${m.m1} <span style="font-family:'Orbitron',monospace;color:var(--muted)">${s1.toFixed(1)}</span> vs ${m.m2} <span style="font-family:'Orbitron',monospace;color:var(--muted)">${s2.toFixed(1)}</span></span>
                   <button class="btn btn-sm" style="background:rgba(29,106,255,.2);color:var(--lblue)" onclick="advanceBracket(${ri},${mi},'${m.m1}')">${m.m1} wins</button>
                   <button class="btn btn-sm" style="background:rgba(29,106,255,.2);color:var(--lblue)" onclick="advanceBracket(${ri},${mi},'${m.m2}')">${m.m2} wins</button>
                 </div>`;
               }).join('')}
-            </div>
-          `).join('')}
+            </div>`;
+          }).join('')}
         </div>
       ` : ''}
     </div>`;
@@ -4301,7 +4686,7 @@ function generateBracket(){
   const rounds = [];
   const round1 = [];
   for(let i = 0; i < teams.length; i += 2){
-    round1.push({m1: teams[i], m2: teams[i+1] || 'TBD', s1: null, s2: null, winner: null});
+    round1.push({m1: teams[i], m2: teams[i+1] || 'TBD', s1: null, s2: null, winner: null, done: false});
   }
   rounds.push(round1);
 
@@ -4309,16 +4694,18 @@ function generateBracket(){
   let n = round1.length;
   while(n > 1){
     n = Math.ceil(n / 2);
-    rounds.push(Array.from({length: n}, () => ({m1: null, m2: null, s1: null, s2: null, winner: null})));
+    rounds.push(Array.from({length: n}, () => ({m1: null, m2: null, s1: null, s2: null, winner: null, done: false})));
   }
 
-  state.bracket = {generated: true, rounds};
+  // `round` is the bracket's week clock — which round is currently being played.
+  state.bracket = {generated: true, rounds, round: 0, complete: false};
   save(); render();
 }
 
 function advanceBracket(roundIdx,matchIdx,winner){
   const b=state.bracket;
   b.rounds[roundIdx][matchIdx].winner=winner;
+  b.rounds[roundIdx][matchIdx].done=true;
   // Advance to next round
   const nextRound=b.rounds[roundIdx+1];
   if(nextRound){
@@ -4326,7 +4713,109 @@ function advanceBracket(roundIdx,matchIdx,winner){
     if(matchIdx%2===0) nextRound[slot].m1=winner;
     else nextRound[slot].m2=winner;
   }
+  // Keep the round clock in step when every match gets decided by hand.
+  if(champRoundClosed(roundIdx) && currentChampRound() === roundIdx){
+    b.round = Math.min(roundIdx + 1, b.rounds.length - 1);
+    if(roundIdx === b.rounds.length - 1) b.complete = true;
+  }
   save(); render();
+}
+
+// Close the championship round in progress. Scores come from the stats entered
+// under that round's week key; the higher score advances. Mirrors advanceWeek().
+function advanceChampRound(){
+  const b = state.bracket;
+  if(!b?.generated) return;
+  const ri = currentChampRound();
+  if(ri < 0) return;
+
+  const round = b.rounds[ri];
+  const roundName = champRoundName(ri);
+  const msg = document.getElementById('champMsg');
+
+  // Lock in scores from whatever's in weeklyStats right now.
+  recalcChampRound(ri);
+  const live = round.filter(isLiveMatch);
+  if(live.length === 0) return;
+
+  // A tie can't pick a winner. Matches the commissioner already decided by
+  // hand on the Bracket tab are exempt.
+  const ties = live.filter(m => m.s1 === m.s2 && !m.winner);
+  if(ties.length){
+    const noStats = ties.length === live.length && ties.every(m => !m.s1 && !m.s2);
+    save(); render();
+    const el = document.getElementById('champMsg');
+    if(el){
+      el.style.color = 'var(--gold)';
+      el.textContent = noStats
+        ? `No stats entered for ${roundName} yet — enter them on the 📋 Stats tab first.`
+        : `${ties.length} matchup(s) tied. Break the tie before closing the round.`;
+    }
+    return;
+  }
+
+  round.forEach((m, mi) => {
+    if(!isLiveMatch(m)){
+      // Bye — whichever side is filled in walks through.
+      const solo = (m.m1 && m.m1 !== 'TBD') ? m.m1 : (m.m2 && m.m2 !== 'TBD') ? m.m2 : null;
+      if(solo) m.winner = solo;
+    } else if(m.s1 !== m.s2){
+      m.winner = m.s1 > m.s2 ? m.m1 : m.m2;
+    } // else: keep the manually-picked winner
+    m.done = true;
+  });
+
+  const next = b.rounds[ri + 1];
+  if(next){
+    next.forEach(m => { m.m1 = null; m.m2 = null; });
+    round.forEach((m, mi) => {
+      const slot = Math.floor(mi / 2);
+      if(!next[slot] || !m.winner) return;
+      if(mi % 2 === 0) next[slot].m1 = m.winner; else next[slot].m2 = m.winner;
+    });
+    b.round = ri + 1;
+    recalcChampRound(ri + 1);
+  } else {
+    b.round = ri;
+    b.complete = true;
+  }
+
+  save();
+  render();
+  const el = document.getElementById('champMsg');
+  if(el){
+    el.style.color = 'var(--green)';
+    el.textContent = next
+      ? `✅ ${roundName} closed. Now on ${champRoundName(ri+1)}.`
+      : `👑 ${round[0]?.winner} is the champion!`;
+  }
+}
+
+// Reopen the last closed championship round so stats can be fixed and the
+// round re-closed. Everything downstream of it is cleared.
+function undoChampRound(){
+  const b = state.bracket;
+  if(!b?.generated) return;
+  const cur = currentChampRound();
+  const target = champRoundClosed(cur) ? cur : cur - 1;
+  if(target < 0){
+    const el = document.getElementById('champMsg');
+    if(el){ el.style.color = 'var(--muted)'; el.textContent = 'Nothing to undo — the first round is still open.'; }
+    return;
+  }
+  if(!confirm(`Reopen ${champRoundName(target)}? Its winners clear so you can edit stats and re-close. Later rounds reset.`)) return;
+
+  b.rounds[target].forEach(m => { m.winner = null; m.done = false; });
+  for(let i = target + 1; i < b.rounds.length; i++){
+    b.rounds[i].forEach(m => { m.m1 = null; m.m2 = null; m.s1 = null; m.s2 = null; m.winner = null; m.done = false; });
+  }
+  b.round = target;
+  b.complete = false;
+  recalcChampRound(target);
+  save();
+  render();
+  const el = document.getElementById('champMsg');
+  if(el){ el.style.color = 'var(--gold)'; el.textContent = `↶ ${champRoundName(target)} reopened. Edit stats, then close it again.`; }
 }
 
 // ─── MOBILE NAV ────────────────────────────────────────────────────────────
