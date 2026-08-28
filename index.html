@@ -3252,6 +3252,9 @@ function renderAdminSync(){
       <!-- Fix a bad roster -->
       ${renderAdminFixRoster()}
 
+      <!-- Manual roster edit -->
+      ${renderAdminEditRoster()}
+
       <!-- Reset a player's password -->
       <div class="card">
         <h3 style="font-weight:800;margin-bottom:6px">🔑 Reset a Player's Password</h3>
@@ -3449,6 +3452,201 @@ function swapRosterPlayers(){
   setMsg('var(--green)',
     `✅ Swapped <strong>${nameA}</strong> → ${b} and <strong>${nameB}</strong> → ${a} ` +
     `on the ${touched.join(' and ')} roster${touched.length>1?'s':''}. Scores recalculated.`);
+}
+
+// ─── MANUAL ROSTER EDIT ────────────────────────────────────────────────────
+// Free-form roster surgery: add or drop any player on any manager's roster,
+// group or championship. "Fix a Roster" covers the straight two-way swap;
+// this is the escape hatch for everything else — a missed pick, a player who
+// shouldn't be there, a roster that came out the wrong size.
+
+function rosterListFor(manager, type){
+  if(!manager) return null;
+  const map = type === 'champ' ? state.champRosters : state.rosters;
+  return map?.[manager] || null;
+}
+
+// Whoever else holds this player on the same roster type, if anyone.
+function ownerOfPlayer(pid, type, exclude){
+  const map = (type === 'champ' ? state.champRosters : state.rosters) || {};
+  for(const [mgr, list] of Object.entries(map)){
+    if(mgr !== exclude && (list || []).includes(pid)) return mgr;
+  }
+  return null;
+}
+
+// Rosters feed every score, so any edit rebuilds all of them.
+function recalcAllFromRosters(){
+  for(let w = 1; w <= 7; w++) recalcMatchupsForWeek(w);
+  (state.bracket?.rounds || []).forEach((_, ri) => recalcChampRound(ri));
+}
+
+function logRosterTx(manager, added, dropped){
+  if(!state.transactions) state.transactions = [];
+  state.transactions.unshift({
+    groupId: state.users?.[manager]?.groupId,
+    username: manager,
+    added: added ?? null,
+    dropped: dropped ?? null,
+    ts: Date.now(),
+  });
+}
+
+function renderAdminEditRoster(){
+  const managers = allRosteredManagers();
+  if(!managers.length) return '';
+
+  const mgr = window._editMgr || '';
+  const type = window._editType === 'champ' ? 'champ' : 'group';
+  const hasChamp = !!(state.champRosters && Object.keys(state.champRosters).length);
+  const list = mgr ? (rosterListFor(mgr, type) || []) : [];
+  const filter = (window._editFilter || '').toLowerCase();
+
+  // Anyone not already on this roster can be added.
+  const candidates = ALL_PLAYERS.filter(p =>
+    !list.includes(p.id) &&
+    (!filter || p.name.toLowerCase().includes(filter) || (p.team || '').toLowerCase().includes(filter)));
+
+  const sizeColor = list.length === 7 ? 'var(--green)' : 'var(--gold)';
+  const typeWord = type === 'champ' ? 'championship' : 'group';
+
+  return `
+    <div class="card">
+      <h3 style="font-weight:800;margin-bottom:6px">✏️ Edit a Roster (Manual)</h3>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+        Add or drop players directly on any manager's roster — for one-off corrections a straight swap can't cover.
+        <strong style="color:var(--text)">Scores and standings recalculate after every change.</strong>
+      </p>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+        <label style="flex:1;min-width:180px">
+          <span style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Manager</span>
+          <select onchange="window._editMgr=this.value;render()"
+            style="width:100%;margin-top:4px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:700">
+            <option value="">Choose a manager…</option>
+            ${managers.map(m => `<option value="${m}" ${m===mgr?'selected':''}>${m}</option>`).join('')}
+          </select>
+        </label>
+        ${hasChamp ? `
+          <div style="display:flex;background:var(--surf2);border-radius:8px;padding:3px">
+            ${[['group','Group'],['champ','🏆 Championship']].map(([k,l]) =>
+              `<button onclick="window._editType='${k}';render()" style="background:${type===k?'var(--blue)':'none'};color:${type===k?'#fff':'var(--muted)'};border:none;padding:8px 12px;border-radius:6px;font-size:.78rem;font-weight:700;cursor:pointer">${l}</button>`
+            ).join('')}
+          </div>
+        ` : ''}
+      </div>
+
+      ${!mgr ? `
+        <p style="color:var(--muted);font-size:.85rem">Pick a manager to see their roster.</p>
+      ` : !rosterListFor(mgr, type) ? `
+        <p style="color:var(--muted);font-size:.85rem">
+          ${mgr} has no ${typeWord} roster yet.${type==='champ'?' They may not have qualified for the bracket.':''}
+        </p>
+      ` : `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+            ${mgr}'s ${typeWord} roster
+          </span>
+          <span style="font-size:.78rem;font-weight:800;color:${sizeColor}">${list.length}/7 players</span>
+        </div>
+
+        <div style="background:var(--surf2);border-radius:8px;overflow:hidden;margin-bottom:14px">
+          ${list.length === 0 ? `
+            <div style="padding:16px;text-align:center;color:var(--muted);font-size:.82rem">Roster is empty.</div>
+          ` : list.map(pid => {
+            const p = PLAYER_MAP[pid];
+            return `
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(26,51,80,.3)">
+                <div style="width:26px;height:26px;border-radius:50%;background:${p?.color||'#555'}33;display:flex;align-items:center;justify-content:center;font-size:.62rem;font-weight:800;color:${p?.color||'#999'};flex-shrink:0">#${p?.num ?? '?'}</div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:700;font-size:.82rem">${p ? p.name : 'Unknown player #' + pid}</div>
+                  <div style="font-size:.65rem;color:${p?.color||'var(--muted)'}">${p?.team || 'not in the current player pool'}${p?.pos?' · '+p.pos:''}</div>
+                </div>
+                <button onclick="rosterEditRemove(${pid})" title="Drop this player"
+                  style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);color:var(--red);padding:4px 9px;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:700">✕ Drop</button>
+              </div>`;
+          }).join('')}
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input placeholder="Search to narrow the list…" value="${filter}"
+            oninput="window._editFilter=this.value;render()"
+            style="flex:1;min-width:160px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+          <select id="editAddPid" style="flex:2;min-width:200px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+            <option value="">Add a player…</option>
+            ${candidates.map(p => {
+              const owner = ownerOfPlayer(p.id, type, mgr);
+              return `<option value="${p.id}">${p.name}${p.team?' · '+p.team:''}${owner?' — on '+owner:' — free agent'}</option>`;
+            }).join('')}
+          </select>
+          <button class="btn btn-blue btn-sm" onclick="rosterEditAdd()">+ Add</button>
+        </div>
+        <p style="margin-top:8px;font-size:.72rem;color:var(--muted)">
+          Adding someone another manager already has moves them across — you'll be asked to confirm first.
+        </p>
+      `}
+      <div id="editRosterMsg" style="margin-top:10px;font-size:.85rem"></div>
+    </div>`;
+}
+
+function editRosterMsg(color, html){
+  const el = document.getElementById('editRosterMsg');
+  if(el){ el.style.color = color; el.innerHTML = html; }
+}
+
+function rosterEditRemove(pid){
+  const mgr = window._editMgr;
+  const type = window._editType === 'champ' ? 'champ' : 'group';
+  const list = rosterListFor(mgr, type);
+  if(!list) return;
+  const i = list.indexOf(pid);
+  if(i === -1) return editRosterMsg('var(--red)', 'That player is no longer on this roster.');
+
+  const name = PLAYER_MAP[pid]?.name || '#' + pid;
+  const typeWord = type === 'champ' ? 'championship' : 'group';
+  if(!confirm(`Drop ${name} from ${mgr}'s ${typeWord} roster?\n\nThey'll be left with ${list.length-1} players. Past weeks recalculate, so scores may change.`)) return;
+
+  list.splice(i, 1);
+  logRosterTx(mgr, null, pid);
+  recalcAllFromRosters();
+  save();
+  render();
+  editRosterMsg('var(--green)', `✅ Dropped <strong>${name}</strong> from ${mgr}'s ${typeWord} roster (now ${list.length}/7).`);
+}
+
+function rosterEditAdd(){
+  const mgr = window._editMgr;
+  const type = window._editType === 'champ' ? 'champ' : 'group';
+  const sel = document.getElementById('editAddPid');
+  const pid = parseInt(sel?.value, 10);
+  if(!mgr || !pid) return editRosterMsg('var(--red)', 'Pick a player to add.');
+
+  const typeWord = type === 'champ' ? 'championship' : 'group';
+  const list = rosterListFor(mgr, type);
+  if(!list) return editRosterMsg('var(--red)', `${mgr} has no ${typeWord} roster.`);
+  if(list.includes(pid)) return editRosterMsg('var(--red)', 'They are already on this roster.');
+
+  const name = PLAYER_MAP[pid]?.name || '#' + pid;
+  const owner = ownerOfPlayer(pid, type, mgr);
+
+  if(owner){
+    const ownerList = rosterListFor(owner, type) || [];
+    if(!confirm(`${name} is on ${owner}'s ${typeWord} roster.\n\nMove them to ${mgr}? ${owner} will be left with ${ownerList.length-1} players.`)) return;
+    const oi = ownerList.indexOf(pid);
+    if(oi !== -1) ownerList.splice(oi, 1);
+    logRosterTx(owner, null, pid);
+  } else if(list.length >= 7){
+    if(!confirm(`${mgr} already has ${list.length} players. Add ${name} anyway?\n\nRosters are normally 7, and only the top 5 score each week.`)) return;
+  }
+
+  list.push(pid);
+  logRosterTx(mgr, pid, null);
+  recalcAllFromRosters();
+  save();
+  render();
+  editRosterMsg('var(--green)',
+    `✅ Added <strong>${name}</strong> to ${mgr}'s ${typeWord} roster (now ${list.length}/7)` +
+    (owner ? `, moved off ${owner}.` : '.'));
 }
 
 async function adminSyncRosters(){
