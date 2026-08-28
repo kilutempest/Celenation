@@ -1474,6 +1474,9 @@ let state = {
   transactions:[],
   champDraft:null,
   champRosters:{},
+  playerEdits:{},     // playerId -> {name,team,abbr,color,num,pos} overrides
+  customPlayers:[],   // players added by the commissioner
+  deletedPlayers:[],  // base-roster player ids hidden from the pool
   bracket:{ rounds:[], generated:false },
   nextGroupId:1,
 };
@@ -1483,6 +1486,7 @@ let me = null; // { username }
 function load(){
   try{ const s=localStorage.getItem('cnf_v1'); if(s) state=JSON.parse(s); }catch(e){}
   try{ const u=localStorage.getItem('cnf_user'); if(u) me=JSON.parse(u); }catch(e){}
+  applyPlayerCustomizations();
 }
 // Reconcile state.users[m].groupId with the actual group memberships in
 // state.groups. Heals any drift caused by stale writes from clients that
@@ -1803,6 +1807,7 @@ function mergeCloudState(cloud){
       if(u && 'password' in u) delete u.password;
     }
   }
+  applyPlayerCustomizations();
 }
 
 // ─── FORGOT PASSWORD ──────────────────────────────────────────────────────
@@ -3138,11 +3143,12 @@ function renderAdmin(){
     <h1 class="page-title">⚙️ Commissioner Panel</h1>
     <p class="page-sub">Manage groups, run drafts, sync live stats from RecLeague.net</p>
     <div class="tabs">
-      ${[['sync','🔄 Live Sync'],['groups','Groups'],['draft','Live Draft'],['stats','📋 Stats'],['week','Week Control'],['brackets','Bracket'],['champdraft','🏆 Champ Draft']].map(([k,l])=>
+      ${[['sync','🔄 Live Sync'],['players','🏀 Players'],['groups','Groups'],['draft','Live Draft'],['stats','📋 Stats'],['week','Week Control'],['brackets','Bracket'],['champdraft','🏆 Champ Draft']].map(([k,l])=>
         `<button class="tab ${t===k?'active':''}" onclick="window._adminTab='${k}';render()">${l}</button>`
       ).join('')}
     </div>
     ${t==='sync'?renderAdminSync():''}
+    ${t==='players'?renderAdminPlayers():''}
     ${t==='groups'?renderAdminGroups():''}
     ${t==='draft'?renderAdminDraft():''}
     ${t==='stats'?renderAdminStats():''}
@@ -3647,6 +3653,377 @@ function rosterEditAdd(){
   editRosterMsg('var(--green)',
     `✅ Added <strong>${name}</strong> to ${mgr}'s ${typeWord} roster (now ${list.length}/7)` +
     (owner ? `, moved off ${owner}.` : '.'));
+}
+
+// ─── PLAYER DATABASE ───────────────────────────────────────────────────────
+// The CeleNation player pool — the people who get drafted, not the app's user
+// accounts. The hardcoded SEASON10_PLAYERS list is the base; everything the
+// commissioner changes lives in state (and therefore syncs to the cloud) and
+// is re-applied on top at load. RecLeague sync only patches ppg/rpg/etc by id,
+// so it never clobbers a name or team edited here.
+
+const PLAYER_STAT_FIELDS = ['ppg','rpg','apg','spg','bpg'];
+const CUSTOM_PLAYER_ID_BASE = 9000000;   // clear of RecLeague's ~984xxx ids
+
+let _playerCustomFp = null;
+
+// Rebuild ALL_PLAYERS from the base list + custom additions, minus deletions,
+// with per-player edits laid over the top. Cheap no-op when nothing changed.
+function applyPlayerCustomizations(force){
+  const edits = state.playerEdits || {};
+  const customs = state.customPlayers || [];
+  const deleted = state.deletedPlayers || [];
+  const fp = JSON.stringify([edits, customs, deleted]);
+  if(!force && fp === _playerCustomFp) return;
+  _playerCustomFp = fp;
+
+  const prev = PLAYER_MAP || {};
+  const del = new Set(deleted);
+  const merged = [...SEASON10_PLAYERS, ...customs]
+    .filter(p => !del.has(p.id))
+    .map(p => {
+      const out = {...p};
+      // Carry over any stats already synced onto the live objects.
+      const old = prev[p.id];
+      if(old) PLAYER_STAT_FIELDS.forEach(k => { if(old[k] != null) out[k] = old[k]; });
+      const e = edits[p.id];
+      if(e) Object.assign(out, e);
+      return out;
+    });
+
+  ALL_PLAYERS = merged;
+  rebuildPlayerIndex();
+}
+
+function setPlayerEdit(pid, fields){
+  if(!state.playerEdits) state.playerEdits = {};
+  state.playerEdits[pid] = {...(state.playerEdits[pid] || {}), ...fields};
+}
+
+function isCustomPlayer(pid){ return (state.customPlayers || []).some(p => p.id === pid); }
+function isPlayerEdited(pid){ return !!(state.playerEdits && state.playerEdits[pid]); }
+
+// Distinct teams in the pool, with their abbr/colour and headcount.
+function playerTeams(){
+  const map = new Map();
+  ALL_PLAYERS.forEach(p => {
+    const key = p.team || 'Unassigned';
+    if(!map.has(key)) map.set(key, {name: key, abbr: p.abbr || '', color: p.color || '#888888', count: 0});
+    map.get(key).count++;
+  });
+  return [...map.values()].sort((a,b) => a.name.localeCompare(b.name));
+}
+
+// Every manager holding this player, on either roster type.
+function playerRosterOwners(pid){
+  const owners = new Set();
+  [state.rosters, state.champRosters].forEach(map => {
+    Object.entries(map || {}).forEach(([mgr, list]) => { if((list || []).includes(pid)) owners.add(mgr); });
+  });
+  return [...owners];
+}
+
+function playerDbMsg(color, html){
+  const el = document.getElementById('playerDbMsg');
+  if(el){ el.style.color = color; el.innerHTML = html; }
+}
+
+const val = id => (document.getElementById(id)?.value || '').trim();
+
+function renderAdminPlayers(){
+  const sub = window._playerTab === 'teams' ? 'teams' : 'players';
+  return `
+    <div style="max-width:900px">
+      <div style="display:flex;background:var(--surf2);border-radius:8px;padding:3px;margin-bottom:14px;width:fit-content">
+        ${[['players','🏀 Players'],['teams','🏳 Teams']].map(([k,l]) =>
+          `<button onclick="window._playerTab='${k}';render()" style="background:${sub===k?'var(--blue)':'none'};color:${sub===k?'#fff':'var(--muted)'};border:none;padding:8px 14px;border-radius:6px;font-size:.8rem;font-weight:700;cursor:pointer">${l}</button>`
+        ).join('')}
+      </div>
+      <div id="playerDbMsg" style="margin-bottom:12px;font-size:.85rem"></div>
+      ${sub === 'players' ? renderPlayerDbList() : renderTeamDbList()}
+    </div>`;
+}
+
+function renderPlayerDbList(){
+  const filter = (window._pdbFilter || '').toLowerCase();
+  const teamFilter = window._pdbTeam || '';
+  const editing = window._pdbEditId || null;
+  const teams = playerTeams();
+
+  const rows = ALL_PLAYERS.filter(p =>
+    (!teamFilter || p.team === teamFilter) &&
+    (!filter || p.name.toLowerCase().includes(filter) || (p.team || '').toLowerCase().includes(filter))
+  ).sort((a,b) => (a.team || '').localeCompare(b.team || '') || a.name.localeCompare(b.name));
+
+  const editedCount = Object.keys(state.playerEdits || {}).length;
+  const customCount = (state.customPlayers || []).length;
+  const deletedCount = (state.deletedPlayers || []).length;
+
+  return `
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="font-weight:800;margin-bottom:6px">🏀 Player Database</h3>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+        The pool everyone drafts from — ${ALL_PLAYERS.length} players.
+        Edits are saved to the league and survive a RecLeague stat sync.
+        ${editedCount||customCount||deletedCount ? `<br><span style="color:var(--lblue)">${editedCount} edited · ${customCount} added · ${deletedCount} removed</span>` : ''}
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input placeholder="Search name or team…" value="${filter}" oninput="window._pdbFilter=this.value;render()"
+          style="flex:1;min-width:160px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+        <select onchange="window._pdbTeam=this.value;render()"
+          style="background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:700">
+          <option value="">All teams (${teams.length})</option>
+          ${teams.map(t => `<option value="${t.name}" ${t.name===teamFilter?'selected':''}>${t.name} (${t.count})</option>`).join('')}
+        </select>
+        <button class="btn btn-blue btn-sm" onclick="window._pdbAdding=!window._pdbAdding;render()">
+          ${window._pdbAdding ? '✕ Cancel' : '+ New Player'}
+        </button>
+      </div>
+    </div>
+
+    ${window._pdbAdding ? `
+      <div class="card" style="margin-bottom:14px;border-color:rgba(29,106,255,.4)">
+        <h3 style="font-weight:800;margin-bottom:12px">+ Add a Player</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase">Name
+            <input id="np_name" placeholder="Full name" style="width:100%;margin-top:4px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:400;text-transform:none"></label>
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase">Team
+            <input id="np_team" list="pdbTeamList" placeholder="Team name" style="width:100%;margin-top:4px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:400;text-transform:none"></label>
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase">Number
+            <input id="np_num" placeholder="e.g. 23" style="width:100%;margin-top:4px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:400"></label>
+          <label style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase">Position
+            <select id="np_pos" style="width:100%;margin-top:4px;background:var(--surf2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-weight:400">
+              ${['','PG','SG','SF','PF','C'].map(x => `<option value="${x}">${x || '—'}</option>`).join('')}
+            </select></label>
+        </div>
+        <datalist id="pdbTeamList">${playerTeams().map(t => `<option value="${t.name}">`).join('')}</datalist>
+        <button class="btn btn-blue" style="margin-top:12px" onclick="addNewPlayer()">Add Player</button>
+        <p style="margin-top:8px;font-size:.72rem;color:var(--muted)">
+          New team names pick up a default colour you can change on the Teams tab.
+        </p>
+      </div>
+    ` : ''}
+
+    <div class="card" style="padding:0;overflow:hidden">
+      ${rows.length === 0 ? `
+        <div style="padding:32px;text-align:center;color:var(--muted)">No players match.</div>
+      ` : rows.map(p => editing === p.id ? renderPlayerDbEditRow(p) : `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(26,51,80,.3)">
+          <div style="width:30px;height:30px;border-radius:50%;background:${p.color}33;display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:800;color:${p.color};flex-shrink:0">#${p.num || '?'}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:.85rem">
+              ${p.name}
+              ${isCustomPlayer(p.id) ? `<span class="badge b-green" style="margin-left:6px;font-size:.6rem">added</span>` : ''}
+              ${isPlayerEdited(p.id) ? `<span class="badge b-gold" style="margin-left:4px;font-size:.6rem">edited</span>` : ''}
+            </div>
+            <div style="font-size:.68rem;color:${p.color}">${p.team}${p.pos ? ' · ' + p.pos : ''}</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="window._pdbEditId=${p.id};render()">Edit</button>
+          <button onclick="deletePlayerFromDb(${p.id})" title="Remove from the pool"
+            style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);color:var(--red);padding:5px 9px;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:700">🗑</button>
+        </div>`).join('')}
+    </div>
+
+    ${(Object.keys(state.playerEdits || {}).length || (state.customPlayers || []).length || (state.deletedPlayers || []).length) ? `
+      <div style="margin-top:14px">
+        <button class="btn btn-outline btn-sm" onclick="resetPlayerDatabase()" style="color:var(--red);border-color:rgba(255,80,80,.3)">
+          ↺ Reset database to the original Season 10 list
+        </button>
+      </div>
+    ` : ''}`;
+}
+
+function renderPlayerDbEditRow(p){
+  const teams = playerTeams();
+  const owners = playerRosterOwners(p.id);
+  const f = (label, id, value, extra) => `
+    <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">${label}
+      <input id="${id}" value="${(value ?? '').toString().replace(/"/g,'&quot;')}" ${extra || ''}
+        style="width:100%;margin-top:4px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-weight:400;text-transform:none"></label>`;
+
+  return `
+    <div style="padding:12px;border-bottom:1px solid rgba(26,51,80,.3);background:rgba(29,106,255,.06)">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">
+        ${f('Name', `pe_name_${p.id}`, p.name)}
+        <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">Team
+          <input id="pe_team_${p.id}" list="pdbTeamListEdit" value="${(p.team||'').replace(/"/g,'&quot;')}"
+            style="width:100%;margin-top:4px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-weight:400;text-transform:none"></label>
+        ${f('Number', `pe_num_${p.id}`, p.num)}
+        <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">Position
+          <select id="pe_pos_${p.id}" style="width:100%;margin-top:4px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-weight:400">
+            ${['','PG','SG','SF','PF','C'].map(x => `<option value="${x}" ${x===(p.pos||'')?'selected':''}>${x || '—'}</option>`).join('')}
+          </select></label>
+      </div>
+      <datalist id="pdbTeamListEdit">${teams.map(t => `<option value="${t.name}">`).join('')}</datalist>
+      ${owners.length ? `<p style="margin-top:8px;font-size:.72rem;color:var(--muted)">On ${owners.join(', ')}'s roster — renaming is safe, rosters track player IDs.</p>` : ''}
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn btn-blue btn-sm" onclick="savePlayerEdit(${p.id})">Save</button>
+        <button class="btn btn-outline btn-sm" onclick="window._pdbEditId=null;render()">Cancel</button>
+        ${isPlayerEdited(p.id) ? `<button class="btn btn-outline btn-sm" onclick="revertPlayerEdit(${p.id})" style="color:var(--gold);border-color:rgba(255,184,0,.3)">↺ Revert</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function renderTeamDbList(){
+  const teams = playerTeams();
+  const editing = window._pdbTeamEdit || null;
+  return `
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="font-weight:800;margin-bottom:6px">🏳 Teams</h3>
+      <p style="color:var(--muted);font-size:.85rem">
+        ${teams.length} teams in the pool. Renaming a team, or changing its short code or colour,
+        applies to every player on it.
+      </p>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      ${teams.map(t => editing === t.name ? `
+        <div style="padding:12px;border-bottom:1px solid rgba(26,51,80,.3);background:rgba(29,106,255,.06)">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:end">
+            <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">Team name
+              <input id="te_name" value="${t.name.replace(/"/g,'&quot;')}" style="width:100%;margin-top:4px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-weight:400;text-transform:none"></label>
+            <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">Short code
+              <input id="te_abbr" value="${(t.abbr||'').replace(/"/g,'&quot;')}" maxlength="4" style="width:100%;margin-top:4px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-weight:400"></label>
+            <label style="font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase">Colour
+              <input id="te_color" type="color" value="${/^#[0-9a-f]{6}$/i.test(t.color) ? t.color : '#888888'}" style="width:100%;height:36px;margin-top:4px;background:var(--surf);border:1px solid var(--border);border-radius:6px;padding:2px;cursor:pointer"></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-blue btn-sm" onclick="saveTeamEdit('${t.name.replace(/'/g,"\\'")}')">Save to all ${t.count} players</button>
+            <button class="btn btn-outline btn-sm" onclick="window._pdbTeamEdit=null;render()">Cancel</button>
+          </div>
+        </div>
+      ` : `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(26,51,80,.3)">
+          <div style="width:14px;height:14px;border-radius:4px;background:${t.color};flex-shrink:0;border:1px solid rgba(255,255,255,.15)"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:.85rem">${t.name} <span style="color:var(--muted);font-weight:400">· ${t.abbr || 'no code'}</span></div>
+            <div style="font-size:.68rem;color:var(--muted)">${t.count} player${t.count===1?'':'s'}</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="window._pdbTeamEdit='${t.name.replace(/'/g,"\\'")}';render()">Edit</button>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function savePlayerEdit(pid){
+  const p = PLAYER_MAP[pid];
+  if(!p) return;
+  const name = val(`pe_name_${pid}`);
+  if(!name) return playerDbMsg('var(--red)', '❌ A player needs a name.');
+  const team = val(`pe_team_${pid}`) || 'Unassigned';
+  const num = val(`pe_num_${pid}`);
+  const pos = val(`pe_pos_${pid}`);
+
+  // Adopt the team's existing colour/code when moving someone across.
+  const t = playerTeams().find(x => x.name === team);
+  const fields = {name, team, num, pos};
+  if(t){ fields.abbr = t.abbr; fields.color = t.color; }
+  else { fields.abbr = team.slice(0,3).toUpperCase(); fields.color = p.color || '#888888'; }
+
+  setPlayerEdit(pid, fields);
+  window._pdbEditId = null;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--green)', `✅ Saved <strong>${name}</strong>${team ? ' · ' + team : ''}.`);
+}
+
+function revertPlayerEdit(pid){
+  if(!state.playerEdits || !state.playerEdits[pid]) return;
+  const wasName = PLAYER_MAP[pid]?.name || '';
+  delete state.playerEdits[pid];
+  window._pdbEditId = null;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--gold)', `↺ Reverted ${wasName} to the original details.`);
+}
+
+function addNewPlayer(){
+  const name = val('np_name');
+  if(!name) return playerDbMsg('var(--red)', '❌ Give the player a name.');
+  const team = val('np_team') || 'Unassigned';
+  const num = val('np_num');
+  const pos = val('np_pos');
+
+  if(ALL_PLAYERS.some(p => p.name.toLowerCase() === name.toLowerCase())){
+    if(!confirm(`There's already a player called ${name}. Add another anyway?`)) return;
+  }
+
+  const t = playerTeams().find(x => x.name === team);
+  const id = Math.max(
+    CUSTOM_PLAYER_ID_BASE,
+    ...(state.customPlayers || []).map(p => p.id)
+  ) + 1;
+
+  const player = {
+    id, name, team,
+    abbr: t?.abbr || team.slice(0,3).toUpperCase(),
+    color: t?.color || '#888888',
+    num, pos, photo: null,
+    ppg:0, rpg:0, apg:0, spg:0, bpg:0,
+  };
+  if(!state.customPlayers) state.customPlayers = [];
+  state.customPlayers.push(player);
+
+  window._pdbAdding = false;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--green)', `✅ Added <strong>${name}</strong> to ${team}. They're now draftable and available in Free Agency.`);
+}
+
+function deletePlayerFromDb(pid){
+  const p = PLAYER_MAP[pid];
+  if(!p) return;
+  const owners = playerRosterOwners(pid);
+  if(owners.length){
+    return playerDbMsg('var(--red)',
+      `❌ ${p.name} is on ${owners.join(', ')}'s roster. Drop them there first (Live Sync → Edit a Roster), then remove them here.`);
+  }
+  if(!confirm(`Remove ${p.name} from the player pool?\n\nThey'll disappear from the draft and Free Agency. You can restore them with "Reset database".`)) return;
+
+  if(isCustomPlayer(pid)){
+    state.customPlayers = (state.customPlayers || []).filter(x => x.id !== pid);
+  } else {
+    if(!state.deletedPlayers) state.deletedPlayers = [];
+    if(!state.deletedPlayers.includes(pid)) state.deletedPlayers.push(pid);
+  }
+  if(state.playerEdits) delete state.playerEdits[pid];
+
+  window._pdbEditId = null;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--green)', `✅ Removed <strong>${p.name}</strong> from the pool.`);
+}
+
+function saveTeamEdit(oldName){
+  const name = val('te_name');
+  if(!name) return playerDbMsg('var(--red)', '❌ A team needs a name.');
+  const abbr = val('te_abbr') || name.slice(0,3).toUpperCase();
+  const color = val('te_color') || '#888888';
+
+  const members = ALL_PLAYERS.filter(p => (p.team || 'Unassigned') === oldName);
+  members.forEach(p => setPlayerEdit(p.id, {team: name, abbr, color}));
+
+  window._pdbTeamEdit = null;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--green)',
+    `✅ Updated <strong>${name}</strong>${name !== oldName ? ` (was ${oldName})` : ''} across ${members.length} player${members.length===1?'':'s'}.`);
+}
+
+function resetPlayerDatabase(){
+  if(!confirm('Undo every player and team change and go back to the original Season 10 list?\n\nPlayers you added are deleted. Rosters keep their player IDs, so anyone added who is on a roster will show as an unknown player.')) return;
+  state.playerEdits = {};
+  state.customPlayers = [];
+  state.deletedPlayers = [];
+  window._pdbEditId = null; window._pdbTeamEdit = null;
+  applyPlayerCustomizations(true);
+  save();
+  render();
+  playerDbMsg('var(--gold)', '↺ Player database reset to the original Season 10 list.');
 }
 
 async function adminSyncRosters(){
